@@ -55,8 +55,8 @@ namespace Graph {
     inline void toEdgeListCSV(const std::string& fileBaseName, const GRAPH& graph) noexcept
     {
         std::ofstream csv(fileBaseName + ".csv");
-        AssertMsg(csv, "Cannot create output stream for " << fileBaseName << ".csv");
-        AssertMsg(csv.is_open(), "Cannot open output stream for " << fileBaseName << ".csv");
+        AssertMsg(csv, "Cannot create output stream for " + fileBaseName + ".csv", (void*)nullptr, (GRAPH*)nullptr);
+        AssertMsg(csv.is_open(), "Cannot open output stream for " + fileBaseName + ".csv", (void*)nullptr, (GRAPH*)nullptr);
     
         csv << "FromVertex,ToVertex";
     
@@ -70,12 +70,8 @@ namespace Graph {
             csv << ",Weight";
         if constexpr (GRAPH::HasEdgeAttribute(Capacity))
             csv << ",Capacity";
-        if constexpr (GRAPH::HasEdgeAttribute(BundleSize))
-            csv << ",BundleSize";
         if constexpr (GRAPH::HasEdgeAttribute(ReverseEdge))
             csv << ",ReverseEdge";
-        if constexpr (GRAPH::HasEdgeAttribute(EdgeFlags))
-            csv << ",EdgeFlags";
     
         csv << "\n";
     
@@ -91,12 +87,8 @@ namespace Graph {
                 csv << "," << (int)graph.get(Weight, edge);
             if constexpr (GRAPH::HasEdgeAttribute(Capacity))
                 csv << "," << (int)graph.get(Capacity, edge);
-            if constexpr (GRAPH::HasEdgeAttribute(BundleSize))
-                csv << "," << (int)graph.get(BundleSize, edge);
             if constexpr (GRAPH::HasEdgeAttribute(ReverseEdge))
                 csv << "," << size_t(graph.get(ReverseEdge, edge));
-            if constexpr (GRAPH::HasEdgeAttribute(EdgeFlags))
-                csv << "," << join(graph.get(EdgeFlags, edge));
             csv << "\n";
         }
         csv.close();
@@ -106,8 +98,8 @@ namespace Graph {
     inline void toGML(const std::string& fileBaseName, const GRAPH& graph) noexcept
     {
         std::ofstream gml(fileBaseName + ".graphml");
-        AssertMsg(gml, "Cannot create output stream for " << fileBaseName << ".graphml");
-        AssertMsg(gml.is_open(), "Cannot open output stream for " << fileBaseName << ".graphml");
+        AssertMsg(gml, "Cannot create output stream for " + fileBaseName + ".graphml", (GRAPH*)nullptr);
+        AssertMsg(gml.is_open(), "Cannot open output stream for " + fileBaseName + ".graphml", (GRAPH*)nullptr);
         gml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
         gml << "<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\" "
                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
@@ -130,8 +122,6 @@ namespace Graph {
             gml << "        <key id=\"distance_e\" for=\"edge\" attr.name=\"distance\" attr.type=\"int\"/>\n";
         if constexpr (GRAPH::HasEdgeAttribute(Size))
             gml << "        <key id=\"size_e\" for=\"edge\" attr.name=\"edgesize\" attr.type=\"int\"/>\n";
-        if constexpr (GRAPH::HasEdgeAttribute(BundleSize))
-            gml << "        <key id=\"bundlesize_e\" for=\"edge\" attr.name=\"bundlesize\" attr.type=\"int\"/>\n";
         if constexpr (GRAPH::HasEdgeAttribute(Weight))
             gml << "        <key id=\"weight_e\" for=\"edge\" attr.name=\"edgeweight\" attr.type=\"int\"/>\n";
         if constexpr (GRAPH::HasEdgeAttribute(ReverseEdge))
@@ -167,8 +157,6 @@ namespace Graph {
                 gml << "            <data key=\"distance_e\">" << (int)graph.get(Distance, edge) << "</data>\n";
             if constexpr (GRAPH::HasEdgeAttribute(Size))
                 gml << "            <data key=\"size_e\">" << (int)graph.get(Size, edge) << "</data>\n";
-            if constexpr (GRAPH::HasEdgeAttribute(BundleSize))
-                gml << "            <data key=\"bundlesize_e\">" << (int)graph.get(BundleSize, edge) << "</data>\n";
             if constexpr (GRAPH::HasEdgeAttribute(Weight))
                 gml << "            <data key=\"weight_e\">" << (int)graph.get(Weight, edge) << "</data>\n";
             if constexpr (GRAPH::HasEdgeAttribute(ReverseEdge))

@@ -311,3 +311,122 @@ public:
         std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
     }
 };
+
+
+class CheckCSAPruning : public ParameterizedCommand {
+
+public:
+    CheckCSAPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkCSAPruning", "Checks if pruning rules yield the same results as no pruning for CSA.") {
+        addParameter("CSA input file");
+        addParameter("Number of queries");
+        addParameter("Precompute directed transitive graph?");
+    }
+
+    virtual void execute() noexcept {
+        CSA::Data csaData = CSA::Data::FromBinary(getParameter("CSA input file"));
+        csaData.sortConnectionsAscending();
+        csaData.printInfo();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<StopQuery> queries = generateRandomStopQueries(csaData.numberOfStops(), n);
+
+        // RETRIEVE THE NEW PARAMETER'S VALUE
+        const bool precomputeTransitive = getParameter<bool>("Precompute directed transitive graph?");
+
+        // CONDITIONAL PRECOMPUTATION
+        if (precomputeTransitive) {
+            std::cout << "--- Precomputing directed transitive stop graph... ---" << std::endl;
+            csaData.makeDirectedTransitiveStopGraph(true); // 'true' enables verbose output
+            std::cout << "--- Done. ---" << std::endl;
+        }
+
+        std::vector<int> results_no_pruning;
+        std::vector<int> results_pruning_1;
+
+        // Run with pruning rule 0 (no pruning)
+        std::cout << "--- Running queries with No Pruning (Rule 0) ---" << std::endl;
+        CSA::CSA<false, CSA::AggregateProfiler> algo_no_pruning(csaData);
+        for (const StopQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getEarliestArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics for No Pruning (Rule 0) ---" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
+
+        // Run with pruning rule 1
+        std::cout << "\n--- Running queries with Pruning Rule 1 ---" << std::endl;
+        csaData.sortTransferGraphEdgesByTravelTime();
+        CSA::CSA_prune<false, CSA::AggregateProfiler> algo_pruning_1(csaData);
+        for (const StopQuery& query : queries) {
+            algo_pruning_1.run(query.source, query.departureTime, query.target);
+            results_pruning_1.push_back(algo_pruning_1.getEarliestArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics for Pruning Rule 1 ---" << std::endl;
+        algo_pruning_1.getProfiler().printStatistics();
+
+        // Compare the results
+        bool pruning_is_correct = (results_no_pruning == results_pruning_1);
+
+        if (pruning_is_correct) {
+            std::cout << "\nPruning rule 1 yields the same results as no pruning." << std::endl;
+        } else {
+            std::cout << "\nPruning rule 1 failed comparison." << std::endl;
+        }
+    }
+};
+
+class CheckRAPTORPruning : public ParameterizedCommand {
+
+public:
+    CheckRAPTORPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkRAPTORPruning", "Checks if RAPTOR pruning rules yield the same results as no pruning.") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        // Generate StopQueries, not VertexQueries
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+
+        std::vector<int> results_no_pruning;
+        std::vector<int> results_pruning_1;
+
+        // Run with pruning rule 0 (no pruning)
+        std::cout << "--- Running with No Pruning (Rule 0) ---" << std::endl;
+        RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo_no_pruning(raptorData);
+        for (const StopQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getEarliestArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics for No Pruning (Rule 0) ---" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
+
+        // Run with pruning rule 1
+        std::cout << "\n--- Running with Pruning Rule 1 ---" << std::endl;
+        // The transfer graph must be sorted for pruning rule 1 to be effective
+        raptorData.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::RAPTOR_prune<true, RAPTOR::AggregateProfiler, true, false, false> algo_pruning_1(raptorData);
+        for (const StopQuery& query : queries) {
+            algo_pruning_1.run(query.source, query.departureTime, query.target);
+            results_pruning_1.push_back(algo_pruning_1.getEarliestArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics for Pruning Rule 1 ---" << std::endl;
+        algo_pruning_1.getProfiler().printStatistics();
+
+        // Compare the results
+        bool pruning_1_correct = (results_no_pruning == results_pruning_1);
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        if (pruning_1_correct) {
+            std::cout << "Pruning rule 1 results match no-pruning results. The pruning is correct." << std::endl;
+        } else {
+            std::cout << "ERROR: Pruning rule 1 failed comparison. Results are not identical." << std::endl;
+        }
+    }
+};
+
+
