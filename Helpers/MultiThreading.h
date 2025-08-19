@@ -9,11 +9,27 @@
 #include "Assert.h"
 
 #include <sched.h>
-#include <numa.h>
+
+// Platform-specific includes for thread/CPU affinity
+// NUMA is only available on desktop Linux, not Android/Termux
+#if defined(__linux__) && !defined(__ANDROID__)
+    #include <numa.h>
+    #define NUMA_AVAILABLE 1
+#else
+    #define NUMA_AVAILABLE 0
+    // Dummy NUMA functions for non-desktop-Linux platforms (including Android)
+    typedef struct { int dummy; } bitmask;
+    inline bitmask* numa_allocate_cpumask() { return nullptr; }
+    inline void numa_free_cpumask(bitmask*) { }
+    inline int numa_node_to_cpus(int, bitmask*) { return -1; }
+    inline int numa_bitmask_isbitset(bitmask*, unsigned int) { return 0; }
+    inline int numa_node_of_cpu(int) { return 0; }
+#endif
 
 #include <omp.h>
 
 #include "Assert.h"
+#include "Helpers.h"  // For suppressUnusedParameterWarning
 
 class ThreadScheduler {
 
@@ -21,11 +37,16 @@ public:
     ThreadScheduler(const std::string strategy, const size_t nt = omp_get_num_procs()) :
         numLogicalCpus(omp_get_max_threads()),
         numThreads(nt),
-        numNumaNodes(1),
+        numNumaNodes(1),  // Default to 1 NUMA node for all platforms
         threadToLogicalCpu(numThreads, 0),
         threadToNumaNode(numThreads, 0),
         threadToNumaMaster(numThreads, false),
         numaNodeToLogicalCpus(numNumaNodes) {
+#if NUMA_AVAILABLE
+        // Only try to get actual NUMA node count on desktop Linux
+        numNumaNodes = numa_max_node() + 1;
+        numaNodeToLogicalCpus.resize(numNumaNodes);
+#endif
         initialize(strategy);
     }
 
@@ -49,16 +70,24 @@ public:
 
     inline void pinThread(const size_t threadId) {
         Assert(threadId < threadToLogicalCpu.size(), "Invalid thread ID " << threadId << "!");
+#if defined(__linux__) && !defined(__ANDROID__)
+        // Thread pinning only on desktop Linux (not Android/Termux)
         cpu_set_t mask;
         CPU_ZERO(&mask);
         CPU_SET(threadToLogicalCpu[threadId], &mask);
         sched_setaffinity(0, sizeof(mask), &mask);
+#else
+        // Thread pinning not implemented for this platform
+        suppressUnusedParameterWarning(threadId);
+#endif
     }
 
 protected:
     void initialize(const std::string strategy, bool verbose = true) {
         if (verbose) std::cout << "NUMA nodes in the system: " << numNumaNodes << std::endl;
         const int width = ceil(log10(double(numLogicalCpus)));
+        
+#if NUMA_AVAILABLE
         for (size_t n = 0; n < numNumaNodes; ++n) {
             std::cout << "Node " << n << ": " << std::flush;
             bitmask *bmp = numa_allocate_cpumask();
@@ -72,12 +101,24 @@ protected:
             numa_free_cpumask(bmp);
             std::cout << std::endl;
         }
+#else
+        // No NUMA support, assign all CPUs to single node
+        for (size_t l = 0; l < numLogicalCpus; ++l) {
+            numaNodeToLogicalCpus[0].push_back(l);
+            if (verbose) std::cout << std::setw(width) << std::right << l << " " << std::flush;
+        }
+        if (verbose) std::cout << std::endl;
+#endif
         if (verbose) std::cout << "Distributing threads according to strategy: " << strategy << std::endl;
         if (strategy == "R") distributeRoundRobin();
         if (strategy == "F") distributeFill();
         numNumaNodesUsed = 0;
         for (size_t threadId = 0; threadId < numThreads; ++threadId) {
+#if NUMA_AVAILABLE
             threadToNumaNode[threadId] = numa_node_of_cpu(threadToLogicalCpu[threadId]);
+#else
+            threadToNumaNode[threadId] = 0;  // All threads on node 0 when NUMA unavailable
+#endif
             numNumaNodesUsed = std::max(numNumaNodesUsed, threadToNumaNode[threadId]);
         }
         numNumaNodesUsed++;
@@ -135,10 +176,16 @@ private:
 };
 
 inline void pinThreadToCoreId(const size_t coreId) noexcept {
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Thread pinning only on desktop Linux (not Android/Termux)
     cpu_set_t mask;
     CPU_ZERO(&mask);
     CPU_SET(coreId, &mask);
     sched_setaffinity(0, sizeof(mask), &mask);
+#else
+    // Thread pinning not implemented for this platform
+    suppressUnusedParameterWarning(coreId);
+#endif
 }
 
 inline size_t numberOfCores() noexcept {

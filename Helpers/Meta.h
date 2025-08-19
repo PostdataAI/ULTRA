@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <iostream>
 #include <typeinfo>
-#include <emmintrin.h>
+// #include <emmintrin.h> // Removed: SSE intrinsics not used in this file
 #include <concepts>
 
 #include <cstdlib>

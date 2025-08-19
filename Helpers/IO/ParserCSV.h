@@ -752,7 +752,13 @@ void parseFloat(const char* col, T& x) {
         x = std::numeric_limits<T>::quiet_NaN();
         col += 3;
     } else if (col[0] == 'i' && col[1] == 'n' && col[2] == 'f' && col[3] == '\0') {
+        // Use max value as fallback when infinity is not available
+#if defined(__ANDROID__) || defined(__arm__) || defined(__aarch64__)
+        // On Android/ARM, use max value instead of infinity to avoid compiler warnings
+        x = std::numeric_limits<T>::max();
+#else
         x = std::numeric_limits<T>::infinity();
+#endif
         col += 3;
     }
 

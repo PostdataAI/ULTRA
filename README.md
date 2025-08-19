@@ -54,6 +54,50 @@ cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --target All --config Rel
 
 Make sure you have OpenMP installed.
 
+## Android/ARM Compatibility (technical)
+- Removed unused SSE include in `Helpers/Meta.h` (no SSE intrinsics used).
+- Replaced x86 inline assembly with portable C++ in `Helpers/Helpers.h` (`branchlessConditional`).
+- Added architecture-aware flags in `CMakeLists.txt`:
+  - ARM/Android: `-march=armv8-a+simd` (Android) or `-mcpu=native` (generic ARM)
+  - x86/x64: `-march=native`
+- Optional SIMD via SIMDe (`Helpers/SIMD.h`); enable with `-DULTRA_USE_SIMDE=ON` and provide SIMDe includes.
+- Platform-aware threading in `Helpers/MultiThreading.h`:
+  - NUMA/thread pinning only on desktop Linux
+  - Graceful no-op fallbacks on Android and non-Linux
+
+### Build for Android (ARM64)
+Prerequisites: recent Android NDK, CMake 3.22+, optional SIMDe.
+
+```bash
+# Set Android NDK/toolchain
+export ANDROID_NDK_ROOT=/path/to/android-ndk
+export ANDROID_ABI=arm64-v8a
+export ANDROID_PLATFORM=android-21
+
+# Configure
+cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake \
+      -DANDROID_ABI=$ANDROID_ABI \
+      -DANDROID_PLATFORM=$ANDROID_PLATFORM \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DULTRA_USE_SIMDE=OFF \
+      -B build-android
+
+# Build
+cmake --build build-android -j$(nproc)
+```
+
+Enable SIMDe (optional) by cloning `simde` and passing `-DULTRA_USE_SIMDE=ON`. The build system will add the include directory if found.
+
+### Notes
+- OpenMP is required; ensure your NDK toolchain/cxx-stl provides it.
+- NUMA and explicit thread pinning are disabled on Android.
+
+## Android/ARM Compatibility (plain language)
+- ULTRA now runs on phones and tablets with ARM chips as well as PCs.
+- We removed PC-only code and replaced it with standard C++ so the same program works everywhere.
+- The build picks the right optimizations for your device automatically. Extra performance features are used when available and safely skipped when they are not.
+- Some advanced PC-only threading features are turned off on Android.
+
 ## Usage
 Most preprocessing steps and query algorithms are provided in the console application ``ULTRA``, which offers the following commands:
 
@@ -124,7 +168,7 @@ The algorithms listed above support bimodal networks with public transit and a s
 * ``addModeToMultimodalRAPTORData`` adds a transfer graph for a specified transfer mode to the given multimodal RAPTOR data.
 * ``buildMultimodalTripBasedData`` converts unimodal TB data into multimodal TB data. The transfer graph contained in the TB data is used for the "free" transfers whose transfer time is not penalized. The transfer graphs for the non-"free" modes must be added separately with the ``addModeToMultimodalTripBasedData``.
 * ``addModeToMultimodalTripBasedData`` adds a shortcut graph for a specified transfer mode to the given multimodal TB data.
-`
+
 Additionally, the command ``buildFreeTransferGraph`` in ``ULTRA`` builds a "free" transfer graph by connecting all pairs of stops within a specified geographical distance and then computing the transitive closure.
 
 ULTRA shortcuts for networks with multiple transfer modes can be computed with the following commands in ``ULTRA``:

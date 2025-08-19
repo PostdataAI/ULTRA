@@ -154,7 +154,7 @@ private:
     }
 
     inline void relaxInitialTransfers() noexcept {
-        initialTransfers.template run(sourceVertex, targetVertex, arrivalSlack);
+        initialTransfers.template run<true>(sourceVertex, targetVertex, arrivalSlack);
         for (const Vertex stop : initialTransfers.getForwardPOIs()) {
             if (stop == targetStop) continue;
             Assert(data.isStop(stop), "Reached POI " << stop << " is not a stop!");

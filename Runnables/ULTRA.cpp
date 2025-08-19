@@ -42,6 +42,13 @@ int main(int argc, char** argv) {
     new RunDijkstraRAPTORQueries(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);
+    new CheckULTRARAPTORPruning(shell);
+    new CheckULTRACSAPruning(shell);
+    new CheckRAPTORPruning(shell);
+    new TestTransitiveRAPTORQueries(shell);
+    new CompareCSAandRAPTOR(shell);
+    new TestTransitiveCSAQueries(shell);
+    new CheckCSAPruning(shell);
     new RunTransitiveTBQueries(shell);
     new RunULTRATBQueries(shell);
 
@@ -55,6 +62,9 @@ int main(int argc, char** argv) {
     new RunUBMTBQueries(shell);
     new RunUBMHydRAQueries(shell);
     new ComputeTransferTimeSavings(shell);
+    new CheckMcRAPTORPruning(shell);
+    new CheckULTRAMcRAPTORPruning(shell);
+    new CheckBMcRAPTORPruning(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);

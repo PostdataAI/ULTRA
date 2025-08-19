@@ -20,7 +20,7 @@ struct ShortcutInfo {
         to = permutation.permutate(to);
     }
 
-    inline bool operator<(const ShortcutInfo& other) noexcept {
+    inline bool operator<(const ShortcutInfo& other) const noexcept {
         return std::tie(from, to) < std::tie(other.from, other.to);
     }
 

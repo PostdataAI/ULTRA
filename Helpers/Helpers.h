@@ -48,13 +48,7 @@ template<typename T>
 inline void suppressUnusedParameterWarning(const T&) noexcept {}
 
 inline int branchlessConditional(const bool predicate, const int ifTrue, const int ifFalse) noexcept {
-    int result = 0;
-    __asm__ __volatile__(
-        "mov    %[ifTrue], %[result]\n\t"
-        "test   %[predicate], %[predicate]\n\t"
-        "cmovz  %[ifFalse], %[result]\n\t"
-        : [result] "=&r" (result)
-        : [predicate] "r" (predicate), [ifTrue] "r" (ifTrue), [ifFalse] "r" (ifFalse)
-        : "cc");
-    return result;
+    // Cross-platform branchless conditional using standard C++
+    // This generates efficient branchless code on modern compilers for any architecture
+    return predicate ? ifTrue : ifFalse;
 }
