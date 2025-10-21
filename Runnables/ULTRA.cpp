@@ -44,6 +44,8 @@ int main(int argc, char** argv) {
     new RunULTRARAPTORQueries(shell);
     new RunTransitiveTBQueries(shell);
     new RunULTRATBQueries(shell);
+    new CheckRAPTORPruning(shell);
+    new CheckCSAPruning(shell);
 
     //McULTRA
     new RunTransitiveMcRAPTORQueries(shell);

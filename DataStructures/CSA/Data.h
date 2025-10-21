@@ -123,6 +123,10 @@ public:
         });
     }
 
+    inline void sortTransferGraphEdgesByTravelTime() noexcept {
+        transferGraph.sortEdges(TravelTime);
+    }
+
     inline void sortConnectionsAscendingByDepartureTime() noexcept {
         std::stable_sort(connections.begin(), connections.end(), [](const Connection& a, const Connection& b){
             return a.departureTime < b.departureTime;
