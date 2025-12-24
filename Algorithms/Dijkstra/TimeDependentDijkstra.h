@@ -405,3 +405,170 @@ private:
     Timer timer;
 
 };
+
+template<typename GRAPH, bool DEBUG = false>
+class TimeDependentDijkstraFullFC {
+
+public:
+    using Graph = GRAPH;
+    static constexpr bool Debug = DEBUG;
+    using Type = TimeDependentDijkstraFullFC<Graph, Debug>;
+
+    struct VertexLabel : public ExternalKHeapElement {
+        VertexLabel() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), timeStamp(-1) {}
+
+        inline void reset(int time) {
+            arrivalTime = intMax;
+            parent = noVertex;
+            timeStamp = time;
+        }
+
+        inline bool hasSmallerKey(const VertexLabel* other) const noexcept {
+            return arrivalTime < other->arrivalTime;
+        }
+
+        int arrivalTime;
+        Vertex parent;
+        int timeStamp;
+    };
+
+public:
+    TimeDependentDijkstraFullFC(const GRAPH& graph, const CH::CH& chData) :
+        graph(graph),
+        initialTransfers(chData, FORWARD, graph.numVertices()),
+        Q(graph.numVertices()),
+        label(graph.numVertices()),
+        timeStamp(0),
+        settleCount(0),
+        relaxCount(0) {
+    }
+
+    TimeDependentDijkstraFullFC(const GRAPH&&) = delete;
+
+    template<typename SETTLE = NO_OPERATION, typename STOP = NO_OPERATION, typename PRUNE_EDGE = NO_OPERATION>
+    inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const SETTLE& settle = NoOperation, const STOP& stop = NoOperation, const PRUNE_EDGE& pruneEdge = NoOperation) noexcept {
+        this->source = source;
+        this->departureTime = departureTime;
+        this->targetVertex = target;
+        this->targetStop = StopId(target);
+
+        clear();
+        addSource(source, departureTime);
+        relaxInitialTransfers();
+        runRelaxation(target, settle, stop, pruneEdge);
+    }
+
+    inline void relaxInitialTransfers() noexcept {
+        initialTransfers.run(source, targetVertex);
+        for (const Vertex stop : initialTransfers.getForwardPOIs()) {
+            Assert(initialTransfers.getForwardDistance(stop) != INFTY, "Vertex " << stop << " was not reached!");
+            const int newArrivalTime = departureTime + initialTransfers.getForwardDistance(stop);
+            arrivalByTransfer(StopId(stop), newArrivalTime, source);
+        }
+        if (initialTransfers.getDistance() != INFTY) {
+            const int newArrivalTime = departureTime + initialTransfers.getDistance();
+            arrivalByTransfer(targetStop, newArrivalTime, source);
+        }
+    }
+
+    inline void arrivalByTransfer(const StopId stop, const int arrivalTime, const Vertex parent) noexcept {
+        Assert(arrivalTime >= departureTime, "Negative travel time detected!");
+        VertexLabel& vlabel = getLabel(Vertex(stop));
+        if (vlabel.arrivalTime <= arrivalTime) return;
+        vlabel.arrivalTime = arrivalTime;
+        vlabel.parent = parent;
+        Q.update(&vlabel);
+    }
+
+    inline void clear() noexcept {
+        Q.clear();
+        timeStamp++;
+        settleCount = 0;
+        relaxCount = 0;
+        timer.restart();
+    }
+
+    inline void addSource(const Vertex source, const int time) noexcept {
+        VertexLabel& sourceLabel = getLabel(source);
+        sourceLabel.arrivalTime = time;
+        Q.update(&sourceLabel);
+    }
+
+    template<typename SETTLE, typename STOP = NO_OPERATION, typename PRUNE_EDGE = NO_OPERATION, typename = decltype(std::declval<SETTLE>()(std::declval<Vertex>()))>
+    inline void runRelaxation(const Vertex target, const SETTLE& settle, const STOP& stop = NoOperation, const PRUNE_EDGE& pruneEdge = NoOperation) noexcept {
+        while(!Q.empty()) {
+            if (stop()) break;
+
+            const VertexLabel* uLabel = Q.extractFront();
+            const Vertex u = Vertex(uLabel - &(label[0]));
+            const int t_dep = uLabel->arrivalTime;
+
+            settleCount++;
+            if constexpr (Debug) settle(u);
+            if (u == target) break;
+
+            // --- Optimized Fractional Cascading Logic ---
+
+            // 1. Single Binary Search on the Master List for Vertex u
+            const int masterIndex = graph.getMasterIndex(u, t_dep);
+
+            // 2. If no future trips exist, only handle walk-only edges
+            if (masterIndex == -1) {
+                for (const Edge edge : graph.edgesFrom(u)) {
+                    if (pruneEdge(u, edge)) continue;
+                    const int walkArrival = graph.getWalkArrivalFrom(edge, t_dep);
+                    if (walkArrival != intMax) {
+                        relaxEdge(u, edge, walkArrival);
+                    }
+                }
+                continue;
+            }
+
+            // 3. O(1) Relaxation for all edges using the precomputed master index
+            for (const Edge edge : graph.edgesFrom(u)) {
+                if (pruneEdge(u, edge)) continue;
+                relaxCount++;
+
+                const int newArrivalTime = graph.getArrivalTimeFC(edge, t_dep, masterIndex);
+                if (newArrivalTime != intMax) {
+                    relaxEdge(u, edge, newArrivalTime);
+                }
+            }
+        }
+    }
+
+    inline void relaxEdge(const Vertex u, const Edge edge, const int newArrivalTime) noexcept {
+        const Vertex v = graph.get(ToVertex, edge);
+        VertexLabel& vLabel = getLabel(v);
+        if (newArrivalTime < vLabel.arrivalTime) {
+            vLabel.arrivalTime = newArrivalTime;
+            vLabel.parent = u;
+            Q.update(&vLabel);
+        }
+    }
+
+    // --- Accessors ---
+    inline bool visited(const Vertex vertex) const noexcept { return label[vertex].timeStamp == timeStamp; }
+    inline int getArrivalTime(const Vertex vertex) const noexcept { return visited(vertex) ? label[vertex].arrivalTime : intMax; }
+    inline Vertex getParent(const Vertex vertex) const noexcept { return visited(vertex) ? label[vertex].parent : noVertex; }
+
+private:
+    inline VertexLabel& getLabel(const Vertex vertex) noexcept {
+        VertexLabel& result = label[vertex];
+        if (result.timeStamp != timeStamp) result.reset(timeStamp);
+        return result;
+    }
+
+    const GRAPH& graph;
+    RAPTOR::BucketCHInitialTransfers initialTransfers;
+    Vertex source;
+    int departureTime;
+    Vertex targetVertex;
+    StopId targetStop;
+    ExternalKHeap<2, VertexLabel> Q;
+    std::vector<VertexLabel> label;
+    int timeStamp;
+    int settleCount;
+    int relaxCount;
+    Timer timer;
+};

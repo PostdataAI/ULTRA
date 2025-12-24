@@ -838,7 +838,7 @@ class CompareMRwithTDDijkstra : public ParameterizedCommand {
 
 public:
     CompareMRwithTDDijkstra(BasicShell& shell) :
-        ParameterizedCommand(shell, "compareMRwithTDDijkstra", "Compares MR (with CH) with TD-Dijkstra.") {
+        ParameterizedCommand(shell, "compareMRwithTDDijkstra", "Compares MR (with CH) with TD-Dijkstra and Fractional Cascading.") {
         addParameter("RAPTOR input file");
         addParameter("Intermediate input file");
         addParameter("CH data");
@@ -848,71 +848,85 @@ public:
     virtual void execute() noexcept {
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
-        raptorData.printInfo();
-        
+
         std::cout << "Building time-dependent graph..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
-                  << graph.numEdges() << " edges" << std::endl;
-        
+        TimeDependentGraphFC graph_fc = TimeDependentGraphFC::FromIntermediate(intermediateData);
+
         CH::CH ch(getParameter("CH data"));
 
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
 
-        std::vector<int> results_no_pruning;
-        std::vector<int> results_pruning;
+        // Results containers for validation
+        std::vector<int> results_mr;
+        std::vector<int> results_td_std;
+        std::vector<int> results_td_fc;
 
-        // --- Run with Target Pruning disabled (baseline) ---
+        // --- 1. Run MR (DijkstraRAPTOR) ---
         std::cout << "\n--- Running MR ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm_no_pruning(raptorData, ch);
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm_mr(raptorData, ch);
+        Timer timer_mr;
         for (const VertexQuery& query : queries) {
-            algorithm_no_pruning.run(query.source, query.departureTime, query.target);
-            results_no_pruning.push_back(algorithm_no_pruning.getEarliestArrivalTime(query.target));
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+        }
+        double time_mr = timer_mr.elapsedMilliseconds();
+        algorithm_mr.getProfiler().printStatistics();
+
+        // --- 2. Run TD-Dijkstra Standard (Binary Search) ---
+        std::cout << "\n--- Running TD-Dijkstra (Standard Binary Search) ---" << std::endl;
+        // USE_FRACTIONAL_CASCADING = false
+        using TDDijkstraStd = TimeDependentDijkstraFull<TimeDependentGraph, false>;
+        TDDijkstraStd algorithm_td_std(graph, ch);
+
+        Timer timer_td_std;
+        for (const VertexQuery& query : queries) {
+            algorithm_td_std.run(query.source, query.departureTime, query.target);
+            results_td_std.push_back(algorithm_td_std.getArrivalTime(query.target));
+        }
+        double time_td_std = timer_td_std.elapsedMilliseconds();
+
+        // --- 3. Run TD-Dijkstra Cascaded (Optimized) ---
+        std::cout << "\n--- Running TD-Dijkstra (Fractional Cascading) ---" << std::endl;
+        // USE_FRACTIONAL_CASCADING = true
+        using TDDijkstraFC = TimeDependentDijkstraFullFC<TimeDependentGraphFC, false>;
+        TDDijkstraFC algorithm_td_fc(graph_fc, ch);
+
+        Timer timer_td_fc;
+        for (const VertexQuery& query : queries) {
+            algorithm_td_fc.run(query.source, query.departureTime, query.target);
+            results_td_fc.push_back(algorithm_td_fc.getArrivalTime(query.target));
+        }
+        double time_td_fc = timer_td_fc.elapsedMilliseconds();
+
+        // --- Comparison & Speedup Statistics ---
+        std::cout << "\n--- Final Performance Comparison ---" << std::endl;
+        std::cout << "Queries: " << n << std::endl;
+        std::cout << "MR Total Time:      " << String::msToString(time_mr) << " (Avg: " << time_mr/n << "ms)" << std::endl;
+        std::cout << "TD (Std) Total Time: " << String::msToString(time_td_std) << " (Avg: " << time_td_std/n << "ms)" << std::endl;
+        std::cout << "TD (FC) Total Time:  " << String::msToString(time_td_fc) << " (Avg: " << time_td_fc/n << "ms)" << std::endl;
+
+        if (time_td_fc < time_td_std) {
+            double speedup = (time_td_std / time_td_fc);
+            std::cout << "FC Speedup vs Std:   " << String::prettyDouble(speedup) << "x" << std::endl;
         }
 
-        std::cout << "--- Statistics MR ---" << std::endl;
-        algorithm_no_pruning.getProfiler().printStatistics();
-
-        // --- Run TD-Dijkstra ---
-        std::cout << "\n--- Running TD-Dijkstra ---" << std::endl;
-
-        using TDDijkstra = TimeDependentDijkstraFull<TimeDependentGraph, false>;
-        TDDijkstra algorithm_td(graph, ch);
-
-        size_t totalSettles = 0;
-        size_t totalRelaxes = 0;
-
-        for (const VertexQuery& query : queries) {
-            algorithm_td.run(query.source, query.departureTime, query.target);
-            results_pruning.push_back(algorithm_td.getArrivalTime(query.target));
-            totalSettles += algorithm_td.getSettleCount();
-            totalRelaxes += algorithm_td.getRelaxCount();
-        }
-        
-        std::cout << "--- Statistics TD-Dijkstra ---" << std::endl;
-        std::cout << "Total queries: " << n << std::endl;
-        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
-        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
-
-        // --- Compare results ---
-        std::cout << "\n--- Comparison Results ---" << std::endl;
-        bool pruning_correct = true;
+        // --- Correctness Check ---
+        bool all_correct = true;
         for (size_t i = 0; i < n; ++i) {
-            if (results_no_pruning[i] != results_pruning[i]) {
-                std::cout << "ERROR: Mismatch found for query " << i << "." << std::endl;
-                std::cout << "  No Pruning Result: " << results_no_pruning[i] << std::endl;
-                std::cout << "  Pruning Result: " << results_pruning[i] << std::endl;
-                pruning_correct = false;
+            if (results_mr[i] != results_td_std[i] || results_td_std[i] != results_td_fc[i]) {
+                std::cout << "CRITICAL ERROR: Result mismatch at query " << i << "!" << std::endl;
+                std::cout << "  Source: " << queries[i].source << ", Target: " << queries[i].target << std::endl;
+                std::cout << "  MR: " << results_mr[i] << " | Std: " << results_td_std[i] << " | FC: " << results_td_fc[i] << std::endl;
+                all_correct = false;
                 break;
             }
         }
 
-        if (pruning_correct) {
-            std::cout << "Target pruning results match non-pruning results. The pruning is correct." << std::endl;
-        } else {
-            std::cout << "ERROR: Target pruning failed comparison. Results are not identical." << std::endl;
+        if (all_correct) {
+            std::cout << "\nSUCCESS: All results match perfectly." << std::endl;
         }
     }
 };
