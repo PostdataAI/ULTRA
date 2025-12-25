@@ -946,9 +946,9 @@ public:
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
         
-        std::cout << "Building time-dependent graph..." << std::endl;
+        std::cout << "Building time-dependent graph (with Fractional Cascading precomputation)..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
-        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        TimeDependentGraphFC graph = TimeDependentGraphFC::FromIntermediate(intermediateData);
         std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
                   << graph.numEdges() << " edges" << std::endl;
         
@@ -985,7 +985,7 @@ public:
         // --- Run TD-Dijkstra (stateful) ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraphFC, TDD::AggregateProfiler, false, true, true>;
         // Pass intermediateData as the second argument
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
 
@@ -1057,9 +1057,9 @@ public:
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
         
-        std::cout << "Building time-dependent graph..." << std::endl;
+        std::cout << "Building time-dependent graph (with Fractional Cascading precomputation)..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
-        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        TimeDependentGraphFC graph = TimeDependentGraphFC::FromIntermediate(intermediateData);
         std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
                   << graph.numEdges() << " edges" << std::endl;
         
@@ -1096,7 +1096,7 @@ public:
         // --- Run TD-Dijkstra (stateful) with CoreCH ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraphFC, TDD::AggregateProfiler, false, true, true>;
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
 
         Timer tdTimer;

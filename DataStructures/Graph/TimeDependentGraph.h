@@ -605,6 +605,23 @@ public:
         return minArrivalTime;
     }
 
+    /**
+     * Returns the precomputed local trip offset for this edge using the given master index.
+     *
+     * This is the core primitive needed to integrate FC into algorithms that still
+     * need to iterate individual trips (e.g. stateful scanTrip-based TD-Dijkstra).
+     *
+     * @return true if FC data exists for the edge and masterIndex is in range.
+     */
+    inline bool getTripOffsetFC(const Edge edge, const int masterIndex, uint32_t& outOffset) const noexcept {
+        auto it_ptr = cascadingPointers.find(edge);
+        if (it_ptr == cascadingPointers.end()) return false;
+        if (masterIndex < 0) return false;
+        if ((size_t)masterIndex >= it_ptr->second.size()) return false;
+        outOffset = it_ptr->second[masterIndex].tripOffset;
+        return true;
+    }
+
     inline static TimeDependentGraphFC FromIntermediate(const Intermediate::Data& inter) noexcept {
         // Build a temporary base graph
         TimeDependentGraph base = TimeDependentGraph::FromIntermediate(inter);
