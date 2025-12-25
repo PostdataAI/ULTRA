@@ -6,7 +6,6 @@
 #include <numeric>
 #include <map>
 #include <unordered_map>
-#include <set>
 #include <iostream>
 
 // --- CORE INCLUDES ---
@@ -15,37 +14,77 @@
 #include "../../DataStructures/Attributes/AttributeNames.h"
 #include "../../DataStructures/Graph/Classes/DynamicGraph.h"
 #include "../../Helpers/IO/Serialization.h"
+
+// --- CONSTRUCTOR DEPENDENCIES ---
 #include "../../DataStructures/RAPTOR/Data.h"
 
 using TransferGraph = ::TransferGraph;
 
+
 // =========================================================================
-// 1. Supporting Structures
+// 1. Core Time-Dependent Data Structure
 // =========================================================================
 
+/*
+[CORE LOGIC] A single departure on a specific route.
+
+[USAGE] Stored in the  global 'allDiscreteTrips' vector in TimeDependentGraph.
+Accessed via binary search inside 'getArrivalTime' during edge relaxation.
+*/
 struct DiscreteTrip {
     int departureTime;
     int arrivalTime;
     int tripId = -1;
     uint16_t departureStopIndex = 0;
 
+    // [CORE LOGIC] One trip is less than another if it departs earlier
+    // [OPTIMIZATION] Inline operator: hints compiler to embed logic directly at call site
+    // to avoid function call overhead in hot loops (std::sort, std::lower_bound).
     inline bool operator<(const DiscreteTrip& other) const noexcept {
         return departureTime < other.departureTime;
     }
+    // [CORE LOGIC] Heterogeneous comparison to int timestamps for lower_bound searches
     inline bool operator<(const int time) const noexcept {
         return departureTime < time;
     }
 };
 
+/*
+[CORE LOGIC] Handle stored on the graph edge to reference the flattened trip data
+This is used to map the logical edge to a specific slice of the global 'allDiscreteTrips' vector.
+This way, we avoid storing large function objects on each edge, saving memory
+and improving cache locality.
+
+[USAGE] Stored as the 'Function' attribute on every Edge in the underlying DynamicGraph.
+Retrieved by Dijkstra via 'graph.get(Function, edge)' during relaxation.
+*/
 struct EdgeTripsHandle {
-    uint32_t firstTripIndex;
-    uint32_t tripCount;
-    int walkTime = never;
-    uint32_t firstSuffixIndex;
+    uint32_t firstTripIndex;    // Index into allDiscreteTrips
+    uint32_t tripCount;         // Number of trips for this edge
+    int walkTime = never;       // Walking time if applicable - merges Walking/Transit edges
+    uint32_t firstSuffixIndex;  // [OPTIMIZATION] Index into allSuffixMinArrivals for O(1) lookups
 };
 
+// =========================================================================
+// 2. TimeDependentGraph Wrapper Class
+// =========================================================================
+
+/*
+[FACTORY UTILITY] Custom hash functor for std::pair.
+The C++ Standard Library does not provide a default hash for std::pair.
+
+[USAGE] Used as a key hasher in std::unordered_map during the 'FromIntermediate'
+graph construction phase to group raw stops into edges.
+*/
 struct VertexPairHash {
     std::size_t operator()(const std::pair<Vertex, Vertex>& p) const {
+        /*
+        Hash combination logic:
+        1. Hash the source vertex (p.first)
+        2. Hash the target vertex (p.second)
+        3. Bit-shift the second hash (<< 1) to make the order sensitive (A->B != B->A)
+        4. XOR (^) the two hashes to combine them into a single size_t value
+        */
         return std::hash<size_t>()(size_t(p.first)) ^ (std::hash<size_t>()(size_t(p.second)) << 1);
     }
 };
@@ -61,10 +100,16 @@ struct TaggedIntegerHash {
     }
 };
 
-// =========================================================================
-// 2. Base Time-Dependent Graph
-// =========================================================================
 
+/*
+[CORE LOGIC] Represents the graph data structure for time-dependent queries:
+1. Vertices/Edges use a standard adjacency list (DynamicGraph) for topology.
+2. Timetable data is stored in separate, flattened vectors for cache locality.
+3. Edges store 'EdgeTripsHandle' indices into these flattened vectors.
+
+[USAGE] The main data structure instantiated by the routing engine
+(TimeDependentDijkstraStateful) to answer queries.
+*/
 class TimeDependentGraph {
 private:
     using TDEdgeAttributes = Meta::List<            // The schema for edges
