@@ -1151,7 +1151,7 @@ class CompareMRwithTDStatefulCoreCHFC : public ParameterizedCommand {
 
 public:
     CompareMRwithTDStatefulCoreCHFC(BasicShell& shell) :
-        ParameterizedCommand(shell, "CompareMRwithTDStatefulCoreCHFC", "Compares MR (with CoreCH) with TD-Dijkstra (stateful buffers on transfers only) with CoreCH.") {
+        ParameterizedCommand(shell, "compareMRwithTDStatefulCoreCHFC", "Compares MR (with CoreCH) with TD-Dijkstra (stateful buffers on transfers only) with CoreCH.") {
         addParameter("RAPTOR input file");
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
