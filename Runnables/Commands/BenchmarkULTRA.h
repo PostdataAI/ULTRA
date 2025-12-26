@@ -1147,6 +1147,135 @@ public:
     }
 };
 
+class CompareMRwithTDStatefulCoreCHFC : public ParameterizedCommand {
+
+public:
+    CompareMRwithTDStatefulCoreCHFC(BasicShell& shell) :
+        ParameterizedCommand(shell, "CompareMRwithTDStatefulCoreCHFC", "Compares MR (with CoreCH) with TD-Dijkstra (stateful buffers on transfers only) with CoreCH.") {
+        addParameter("RAPTOR input file");
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+
+        std::cout << "Building time-dependent graph (with Fractional Cascading precomputation)..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        TimeDependentGraphFC graph_fc = TimeDependentGraphFC::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
+                  << graph.numEdges() << " edges" << std::endl;
+
+        std::cout << "Loading CoreCH..." << std::endl;
+        CH::CH ch(getParameter("Core CH input file"));
+        std::cout << "CoreCH loaded." << std::endl;
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.getGraph(FORWARD).numVertices(), n);
+
+        std::vector<int> results_mr;
+        std::vector<int> results_td;
+        std::vector<int> results_fc;
+
+        // --- Run MR with CoreCH ---
+        std::cout << "\n--- Running MR (with CoreCH) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>
+            algorithm_mr(raptorData, ch);
+
+        Timer mrTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(mrTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics MR (with CoreCH) ---" << std::endl;
+        algorithm_mr.getProfiler().printStatistics();
+
+        // --- Run TD-Dijkstra (stateful) with CoreCH ---
+        std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH no FC ---" << std::endl;
+
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true, false>;
+        TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
+
+        Timer tdTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td.run(query.source, query.departureTime, query.target);
+            results_td.push_back(algorithm_td.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics TD-Dijkstra (no FC) ---" << std::endl;
+        algorithm_td.getProfiler().printStatistics();
+
+        // --- Run TD-Dijkstra (stateful) with FC ---
+        std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH FC ---" << std::endl;
+
+        using TDDijkstraFC = TimeDependentDijkstraStateful<TimeDependentGraphFC, TDD::AggregateProfiler, false, true, true>;
+        TDDijkstraFC algorithm_fc(graph_fc, raptorData.numberOfStops(), &ch);
+        Timer tdfcTimer;
+
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_fc.run(query.source, query.departureTime, query.target);
+            results_fc.push_back(algorithm_fc.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(tdfcTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics TD-Dijkstra (FC) ---" << std::endl;
+        algorithm_fc.getProfiler().printStatistics();
+
+        // --- Compare results ---
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool results_match = true;
+        size_t mismatchCount = 0;
+        int maxDiff = 0;
+        double totalDiff = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            if (results_mr[i] != results_fc[i]) {
+                int diff = results_fc[i] - results_mr[i];  // TD arrival - MR arrival (positive = TD is worse)
+                if (diff > maxDiff) maxDiff = diff;
+                totalDiff += diff;
+                if (mismatchCount < 5) {
+                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i]
+                              << ", TD-Dijkstra=" << results_fc[i]
+                              << " (TD is " << diff << "s later)" << std::endl;
+                }
+                results_match = false;
+                mismatchCount++;
+            }
+        }
+
+        if (results_match) {
+            std::cout << "SUCCESS: All " << n << " results match!" << std::endl;
+        } else {
+            std::cout << "FAILURE: " << mismatchCount << "/" << n << " mismatches ("
+                      << (100.0 * mismatchCount / n) << "%)" << std::endl;
+            std::cout << "Max difference: " << maxDiff << "s" << std::endl;
+            std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
+        }
+    }
+};
+
 class CheckDijkstraRAPTORPruning : public ParameterizedCommand {
 
 public:
