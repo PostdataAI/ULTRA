@@ -89,6 +89,9 @@ struct VertexPairHash {
     }
 };
 
+struct CascadingPointer {
+    uint32_t tripOffset;
+};
 
 /*
 [CORE LOGIC] Represents the graph data structure for time-dependent queries:
@@ -124,7 +127,7 @@ private:
 
 public:
     /*
-    [CORE LOGIC] Represents a single stop within a full vehicle journey. 
+    [CORE LOGIC] Represents a single stop within a full vehicle journey.
 
     [USAGE] Stored in the flattened 'allTripLegs' vector. Accessed via linear scan
     inside 'scanTrip' (Dijkstra) to traverse the route after boarding.
@@ -140,14 +143,14 @@ public:
     //
     // [USAGE] The primary storage for all schedule events.
     std::vector<DiscreteTrip> allDiscreteTrips;
-    
+
     // [OPTIMIZATION] Suffix minima (range minimum queries) for trip arrival times.
     // For every trip list, we pre-calculate the minimum arrival time of all subsequent trips.
     // allSuffixMinArrivals[i] = min(trips[i].arr, trips[i+1].arr, ...)
     //
     // [USAGE] Accessed during query relaxation inside 'getArrivalTime' to skip linear scans.
     std::vector<int> allSuffixMinArrivals;
-    
+
 private:
     // [OPTIMIZATION] Flattened trip data storage (Compressed Sparse Row style).
     // tripOffsets[tripId] gives the starting index in allTripLegs for that trip.
@@ -164,7 +167,7 @@ public:
     // [CORE LOGIC] Trip traversal: given a tripId and current stop index,
     // retrieve the next stop and its arrival time. This function answers the question:
     // "If I'm on trip X at stop index Y, where do I go next and when do I get there?"
-    // 
+    //
     // [USAGE] Used by Dijkstra's 'scanTrip' function to traverse a specific vehicle's route.
     inline bool getNextStop(const int tripId, const uint16_t currentStopIndex, Vertex& outStop, int& outArrival) const noexcept {
         // Verify tripId validity
@@ -192,7 +195,7 @@ public:
     inline const TripLeg& getTripLeg(const size_t index) const noexcept {
         return allTripLegs[index];
     }
-    
+
     // [USAGE] Returns total number of stop events (size of flattened schedule).
     // Essential for sizing the 'globalVehicleLabels' vector in the Dijkstra algorithm to match the graph size.
     inline size_t getNumStopEvents() const noexcept {
@@ -209,7 +212,7 @@ public:
     inline const DiscreteTrip* getTripsBegin(const EdgeTripsHandle& h) const noexcept {
         return &allDiscreteTrips[h.firstTripIndex];
     }
-    
+
     // [USAGE] Returns iterator to the end of an edge's trip list.
     inline const DiscreteTrip* getTripsEnd(const EdgeTripsHandle& h) const noexcept {
         return &allDiscreteTrips[h.firstTripIndex + h.tripCount];
@@ -220,7 +223,7 @@ public:
         return &allSuffixMinArrivals[h.firstSuffixIndex];
     }
 
-    // [USAGE] Return type for 'findMatchingTrip'. 
+    // [USAGE] Return type for 'findMatchingTrip'.
     // Wraps the result of the backward search used during path reconstruction.
     // If no trip matches the specific (u, v, dep, arr) tuple, tripId remains -1.
     struct FoundTrip {
@@ -232,7 +235,7 @@ public:
     // Finds a tripId that goes from u -> v, departing >= minDepTime and arriving == atArrTime.
     //
     // [USAGE] Called by TimeDependentDijkstraStateful::getPath() during the backward pass
-    // to recover the tripId since we don't store it during the hot forward scan.    
+    // to recover the tripId since we don't store it during the hot forward scan.
     inline FoundTrip findMatchingTrip(Vertex u, Vertex v, int minDepTime, int atArrTime) const noexcept {
         // Iterate edges from u to find connection to v
         for (const Edge e : graph.edgesFrom(u)) {
@@ -270,7 +273,7 @@ public:
         for (size_t i = 0; i < numVertices; ++i) {
             tdGraph.graph.addVertex();
         }
-        
+
         // Initialize stop-specific transfer buffers
         tdGraph.minTransferTimeByVertex.assign(numVertices, 0);
         for (size_t s = 0; s < std::min(numStops, numVertices); ++s) {
@@ -286,21 +289,21 @@ public:
         std::cout << "Building trip segments..." << std::flush;
         for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
             const Intermediate::Trip& trip = inter.trips[tripId];
-            
+
             // Iterate through every stop in the trip to create edges (segments).
-            // A trip with stops A->B->C creates segments A->B and B->C.            
+            // A trip with stops A->B->C creates segments A->B and B->C.
             for (size_t i = 0; i + 1 < trip.stopEvents.size(); ++i) {
                 const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
                 const Intermediate::StopEvent& stopEventV = trip.stopEvents[i + 1];
                 const Vertex u = Vertex(stopEventU.stopId);
                 const Vertex v = Vertex(stopEventV.stopId);
-                
-                // To support transfer times we normally check: 
+
+                // To support transfer times we normally check:
                 // ArrivalTime + TransferTime <= DepartureTime.
                 //
                 // [OPTIMIZATION] We pre-subtract the transfer time from the departure time here.
                 // New Check: ArrivalTime <= (DepartureTime - TransferTime).
-                // This saves an addition operation during the hot query loop.                
+                // This saves an addition operation during the hot query loop.
                 const int buffer = (u < inter.stops.size()) ? inter.stops[u].minTransferTime : 0;
 
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
@@ -315,33 +318,33 @@ public:
 
         // 3. FLATTEN TRIP LEGS (CSR CONSTRUCTION)
         // Build the 'tripOffsets' and 'allTripLegs' vectors for the "On-Vehicle" phase.
-        
+
         // Memory allocation
         tdGraph.tripOffsets.reserve(inter.trips.size() + 1);
-        
+
         // Track the cumulative count of stops seen so far
         size_t totalStops = 0;
         for (const auto& trip : inter.trips) {
             tdGraph.tripOffsets.push_back(totalStops);
             totalStops += trip.stopEvents.size();
         }
-        
+
         // Now that we know how many stops there are, allocate the allTripLegs vector
         // This way, we guarantee that all stop events are laid out sequentially in physical memory.
         tdGraph.tripOffsets.push_back(totalStops);
         tdGraph.allTripLegs.resize(totalStops);
-        
+
         // Outer loop: retrieve baseOffset for each trip,
         // which tells us where to write each specific trip's stop events in allTripLegs.
         for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
             const Intermediate::Trip& trip = inter.trips[tripId];
             const size_t baseOffset = tdGraph.tripOffsets[tripId];
-            
+
             // Inner loop: linear fill of allTripLegs for this trip
             for (size_t i = 0; i < trip.stopEvents.size(); ++i) {
-                tdGraph.allTripLegs[baseOffset + i] = { 
-                    trip.stopEvents[i].arrivalTime, 
-                    Vertex(trip.stopEvents[i].stopId) 
+                tdGraph.allTripLegs[baseOffset + i] = {
+                    trip.stopEvents[i].arrivalTime,
+                    Vertex(trip.stopEvents[i].stopId)
                 };
             }
         }
@@ -349,16 +352,16 @@ public:
         // all stop events for all trips by simply incrementing a pointer/index.
         // This is handled by the CPU prefetcher very efficiently.
 
-        // 4. TRANSFER GRAPH PROCESSING       
+        // 4. TRANSFER GRAPH PROCESSING
         // Load static walking edges (transfers) into a map for easy merging.
         // We extract edges from the static transferGraph and deduplicate them
         // into a hash map (minTransferTimes), which is later used to merge walking options
-        // into transit edges, creating hybrid edges where possible. 
-        
+        // into transit edges, creating hybrid edges where possible.
+
         // Declare a temporary hash map containing directed connections from source to target
-        // and the walking time in seconds (int). 
+        // and the walking time in seconds (int).
         std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
-        
+
         // Pre-allocate enough buckets to store every edge  from the input graph
         // to prevent expensive rehashing during insertion.
         minTransferTimes.reserve(inter.transferGraph.numEdges());
@@ -388,8 +391,8 @@ public:
         // Iterate over the bucketed edges, sort them, optimize them, and store them.
         std::cout << "Creating time-dependent edges (flattened)..." << std::flush;
         size_t edgeCount = 0;
-        
-        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5); 
+
+        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5);
         tdGraph.allSuffixMinArrivals.reserve(tripSegments.size() * 5);
 
         for (auto& pair : tripSegments) {
@@ -398,14 +401,14 @@ public:
             std::vector<DiscreteTrip>& trips = pair.second;
 
             // Check if there is also a walking option for this edge
-            // Result: walkTime holds the walking duration (e.g., 120 seconds) 
+            // Result: walkTime holds the walking duration (e.g., 120 seconds)
             // or never (infinity) if no walk is possible.
             auto transferIt = minTransferTimes.find({u, v});
             int walkTime = (transferIt != minTransferTimes.end()) ? transferIt->second : never;
             if (transferIt != minTransferTimes.end()) {
                 minTransferTimes.erase(transferIt);     // Erase to avoid double-adding later
             }
-            
+
             // A. Sorting - REQUIRED for binary search (std::lower_bound)
             std::sort(trips.begin(), trips.end());
 
@@ -413,12 +416,12 @@ public:
             // Record the starting indices before insertion
             uint32_t firstTripIdx = tdGraph.allDiscreteTrips.size();
             uint32_t firstSuffixIdx = tdGraph.allSuffixMinArrivals.size();
-            
+
             tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(), trips.begin(), trips.end());
-            
+
             // C. Suffix minima (REQUIRED for O(1) arrival query)
             // Iterate backwards to calculate the best possible arrival time from this point onwards.
-            // This allows O(1) pruning during queries.            
+            // This allows O(1) pruning during queries.
             size_t startSize = tdGraph.allSuffixMinArrivals.size();
             tdGraph.allSuffixMinArrivals.resize(startSize + trips.size());
             if (!trips.empty()) {
@@ -443,7 +446,7 @@ public:
 
         // 6. PURE WALKING EDGES
         // Add remaining edges that are walk-only (no transit trips).
-        // This loop processes any walking paths remaining in minTransferTimes 
+        // This loop processes any walking paths remaining in minTransferTimes
         // (those that did not overlap with a bus route).
         // It creates edges with tripCount = 0, meaning they are walk-only.
         for (const auto& pair : minTransferTimes) {
@@ -460,7 +463,7 @@ public:
             tdGraph.addTimeDependentEdge(u, v, handle);
             edgeCount++;
         }
-        
+
         std::cout << " done (" << edgeCount << " edges created)" << std::endl;
 
         return tdGraph;
@@ -497,12 +500,12 @@ public:
     // [USAGE] Main relaxation function called by Dijkstra (runRelaxation) to evaluate edge weights.
     inline int getArrivalTime(const Edge edge, const int departureTime) const noexcept {
         const EdgeTripsHandle& h = graph.get(Function, edge);
-        
+
         int minArrivalTime = never;
-        
+
         auto begin = allDiscreteTrips.begin() + h.firstTripIndex;
         auto end = begin + h.tripCount;
-        
+
         // 1. Binary Search for first valid departure
         // "Which buses can I catch if I arrive at departureTime?"
         auto it = std::lower_bound(begin, end, departureTime,
@@ -569,5 +572,224 @@ public:
         TimeDependentGraph tdGraph;
         tdGraph.deserialize(fileName);
         return tdGraph;
+    }
+};
+
+// =========================================================================
+// 3. Fractional Cascading Optimized Class
+// =========================================================================
+
+class TimeDependentGraphFC : public TimeDependentGraph {
+private:
+    // OPTIMIZATION: Fully flattened CSR layout for maximum cache locality.
+    // 1. Master Lists: Vertices -> Range in flatMasterDepartures
+    std::vector<uint32_t> masterOffsets;      // Size: numVertices + 1
+    std::vector<int> flatMasterDepartures;    // All master lists packed contiguously
+    
+    // 2. Cascading Pointers: Edges -> Range in flatCascadingPointers
+    // This removes the "vector of vectors" double indirection.
+    std::vector<uint32_t> cascadingOffsets;   // Size: numEdges + 1
+    std::vector<uint32_t> flatCascadingPointers; // All pointers packed contiguously
+
+public:
+    // Standard constructor
+    TimeDependentGraphFC() : TimeDependentGraph() {}
+
+    // Move constructor and assignment
+    TimeDependentGraphFC(TimeDependentGraphFC&& other) noexcept :
+        TimeDependentGraph(std::move(other)),
+        masterOffsets(std::move(other.masterOffsets)),
+        flatMasterDepartures(std::move(other.flatMasterDepartures)),
+        cascadingOffsets(std::move(other.cascadingOffsets)),
+        flatCascadingPointers(std::move(other.flatCascadingPointers)) {}
+
+    TimeDependentGraphFC& operator=(TimeDependentGraphFC&& other) noexcept {
+        TimeDependentGraph::operator=(std::move(other));
+        masterOffsets = std::move(other.masterOffsets);
+        flatMasterDepartures = std::move(other.flatMasterDepartures);
+        cascadingOffsets = std::move(other.cascadingOffsets);
+        flatCascadingPointers = std::move(other.flatCascadingPointers);
+        return *this;
+    }
+
+    /**
+     * Finds the index in the master list for a vertex given a departure time.
+     */
+    inline int getMasterIndex(const Vertex u, const int time) const noexcept {
+        // [OPTIMIZATION] Unchecked access if u is guaranteed valid by caller
+        if ((size_t)u + 1 >= masterOffsets.size()) return -1;
+        
+        const uint32_t start = masterOffsets[u];
+        const uint32_t end = masterOffsets[u + 1];
+        
+        // Empty master list check
+        if (start == end) return -1;
+
+        // [OPTIMIZATION] Direct pointer arithmetic on flat array
+        const int* beginPtr = &flatMasterDepartures[start];
+        const int* endPtr = &flatMasterDepartures[end];
+
+        auto it = std::lower_bound(beginPtr, endPtr, time);
+        if (it == endPtr) return -1;
+        
+        return (int)(it - beginPtr);
+    }
+
+    /**
+     * Optimized Fractional Cascading query.
+     */
+    inline int getArrivalTimeFC(const Edge edge, const int departureTime, const int masterIndex) const noexcept {
+        // We use the public get() from the base class
+        const EdgeTripsHandle& h = this->get(Function, edge);
+
+        // Fallback or bounds check logic moved to getTripOffsetFC equivalent inline here
+        // But since this function is rarely called directly compared to getTripOffsetFC + manual suffix min, 
+        // we keep it simple.
+        
+        uint32_t localOffset;
+        if (!getTripOffsetFC(edge, masterIndex, localOffset)) {
+             return this->getArrivalTime(edge, departureTime);
+        }
+
+        int minArrivalTime = never;
+        if (localOffset < h.tripCount) {
+            minArrivalTime = allSuffixMinArrivals[h.firstSuffixIndex + localOffset];
+        }
+
+        if (h.walkTime != never) {
+            minArrivalTime = std::min(minArrivalTime, departureTime + h.walkTime);
+        }
+        return minArrivalTime;
+    }
+
+    /**
+     * Returns the precomputed local trip offset for this edge using the given master index.
+     *
+     * This is the core primitive needed to integrate FC into algorithms that still
+     * need to iterate individual trips (e.g. stateful scanTrip-based TD-Dijkstra).
+     *
+     * @return true if FC data exists for the edge and masterIndex is in range.
+     */
+    inline bool getTripOffsetFC(const Edge edge, const int masterIndex, uint32_t& outOffset) const noexcept {
+        // [OPTIMIZATION] Removed checks assuming caller ensures validity
+        if ((size_t)edge + 1 >= cascadingOffsets.size()) return false;
+        
+        const uint32_t start = cascadingOffsets[edge];
+        // If start == end (offset is equal to next offset), the range is empty
+        if (start == cascadingOffsets[edge + 1]) return false;
+        
+        // Calculate absolute position in the flat pointer array
+        // Note: masterIndex is relative to the Node's master list, which aligns with this edge's pointer list
+        const uint32_t absIndex = start + (uint32_t)masterIndex;
+        
+        // Safety check: is the requested index within this edge's allocated block?
+        // This implicitly checks masterIndex < size
+        if (absIndex >= cascadingOffsets[edge + 1]) return false;
+
+        outOffset = flatCascadingPointers[absIndex];
+        return true;
+    }
+
+    inline static TimeDependentGraphFC FromIntermediate(const Intermediate::Data& inter) noexcept {
+        // Build a temporary base graph
+        TimeDependentGraph base = TimeDependentGraph::FromIntermediate(inter);
+
+        TimeDependentGraphFC fcGraph;
+        // Slice-move the base part into the FC part
+        static_cast<TimeDependentGraph&>(fcGraph) = std::move(base);
+
+        std::cout << "Precomputing Fractional Cascading layers (CSR Layout)..." << std::endl;
+
+        const size_t numV = fcGraph.numVertices();
+        const size_t numE = fcGraph.numEdges();
+
+        // Initialize Offsets
+        fcGraph.masterOffsets.reserve(numV + 1);
+        fcGraph.masterOffsets.push_back(0);
+        
+        fcGraph.cascadingOffsets.reserve(numE + 1);
+        fcGraph.cascadingOffsets.push_back(0);
+
+        // Pre-calculation passes to reserve memory (optional but good for perf)
+        // For simplicity, we just push_back.
+        
+        for (size_t i = 0; i < numV; ++i) {
+            Vertex u(i);
+
+            // 1. Build Master List for Node u
+            std::set<int> uniqueTimes;
+            bool hasTransit = false;
+
+            for (const Edge e : fcGraph.edgesFrom(u)) {
+                const EdgeTripsHandle& h = fcGraph.get(Function, e);
+                if (h.tripCount > 0) {
+                    hasTransit = true;
+                    const DiscreteTrip* begin = fcGraph.getTripsBegin(h);
+                    for (size_t j = 0; j < h.tripCount; ++j) {
+                        uniqueTimes.insert(begin[j].departureTime);
+                    }
+                }
+            }
+
+            // Append to flatMasterDepartures
+            if (hasTransit && !uniqueTimes.empty()) {
+                fcGraph.flatMasterDepartures.insert(fcGraph.flatMasterDepartures.end(), uniqueTimes.begin(), uniqueTimes.end());
+            }
+            // Update Master Offset (points to end of current block / start of next)
+            fcGraph.masterOffsets.push_back(fcGraph.flatMasterDepartures.size());
+
+            // 2. Build Cascading Pointers for all outgoing edges of u
+            // Note: The master list we just built applies to ALL edges from u.
+            // So we must iterate edges again and generate pointers for each.
+            
+            // Get the master list range we just added
+            const uint32_t masterStart = fcGraph.masterOffsets[i]; // i is current index, before push_back it was start
+            const uint32_t masterEnd = fcGraph.masterOffsets[i + 1];
+            // Actually, masterOffsets[i] is start, masterOffsets[i+1] is end. 
+            // We just pushed back size, so [i] and [i+1] are correct.
+            
+            // Convert to vector for easier indexing during pointer generation
+            // Optim: Avoid copy by using pointers to the flat array
+            // But we need random access.
+            
+            for (const Edge e : fcGraph.edgesFrom(u)) {
+                // Resize check for safety (though iteration order should match)
+                while (fcGraph.cascadingOffsets.size() <= (size_t)e) {
+                     fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
+                }
+
+                const EdgeTripsHandle& h = fcGraph.get(Function, e);
+                
+                // Only generate pointers if the node has a master list AND this edge has trips
+                // (or if we want to store 'dummy' pointers for consistency).
+                // Standard FC requires pointers for every element in Master List.
+                
+                if (hasTransit && !uniqueTimes.empty()) { // Use bool flag instead of checking offsets distance
+                    const DiscreteTrip* tBegin = fcGraph.getTripsBegin(h);
+                    const DiscreteTrip* tEnd = fcGraph.getTripsEnd(h);
+                    
+                    // Iterate through the Master List segment we just created
+                    for (uint32_t mIdx = masterStart; mIdx < masterEnd; ++mIdx) {
+                        int t = fcGraph.flatMasterDepartures[mIdx];
+                        
+                        // Find where this time fits in the current edge's trip list
+                        auto it = std::lower_bound(tBegin, tEnd, t);
+                        uint32_t offset = (uint32_t)std::distance(tBegin, it);
+                        
+                        fcGraph.flatCascadingPointers.push_back(offset);
+                    }
+                }
+                
+                // Update Cascading Offset for this edge
+                fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
+            }
+        }
+        
+        // Fill remaining edge offsets if any (e.g. if last nodes have no edges or similar)
+        while (fcGraph.cascadingOffsets.size() <= numE) {
+             fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
+        }
+
+        return fcGraph;
     }
 };

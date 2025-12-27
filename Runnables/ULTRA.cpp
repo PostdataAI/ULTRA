@@ -79,6 +79,7 @@ int main(int argc, char** argv) {
     new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);
     new CompareMRwithTDStatefulCoreCH(shell);
+    new CompareMRwithTDStatefulCoreCHFC(shell);
     new CheckTDDijkstraPruning(shell);
     new DebugSingleQuery(shell);
     new DebugExplicitQuery(shell);

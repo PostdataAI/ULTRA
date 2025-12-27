@@ -24,7 +24,7 @@
 // 4. Flattened Graph Data & Direct Pointers.
 // 5. Search-based Path Reconstruction (No metadata tracking in hot path).
 
-template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
+template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true, bool USE_FRACTIONAL_CASCADING = false>
 class TimeDependentDijkstraStateful {
 public:
     using Graph = GRAPH;
@@ -242,6 +242,15 @@ private:
             if (stop()) break;
 
             const bool curReachedByWalking = cur->reachedByWalking;
+
+            // If enabled, compute the master index once per settled stop.
+            // This replaces per-edge binary searches with O(1) lookups.
+            int masterIndex = -1;
+            if constexpr (USE_FRACTIONAL_CASCADING) {
+                if (u < numberOfStops) {
+                    masterIndex = graph.getMasterIndex(u, t);
+                }
+            }
             
             // 1. CoreCH Backward (if enabled)
             if (targetVertex != noVertex && initialTransfers && u < numberOfStops) {
@@ -263,14 +272,29 @@ private:
                     const DiscreteTrip* end = graph.getTripsEnd(atf);
                     const int* suffixBase = graph.getSuffixMinBegin(atf);
 
-                    auto it = std::lower_bound(begin, end, t,
-                        [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                    const DiscreteTrip* it = end;
+                    if constexpr (USE_FRACTIONAL_CASCADING) {
+                        // If the masterIndex is -1, there are no departures >= t for any outgoing transit edge.
+                        // In that case, we only consider walking below.
+                        if (masterIndex != -1) {
+                            uint32_t localOffset = 0;
+                            if (graph.getTripOffsetFC(e, masterIndex, localOffset)) {
+                                it = begin + std::min<uint32_t>(localOffset, (uint32_t)atf.tripCount);
+                            } else {
+                                it = std::lower_bound(begin, end, t,
+                                    [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                            }
+                        }
+                    } else {
+                        it = std::lower_bound(begin, end, t,
+                            [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                    }
 
                     int bestLocalArrival = never;
                     const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
-                    for (; it != end; ++it) {
-                        const size_t idx = std::distance(begin, it);
+                    for (const DiscreteTrip* trip = it; trip != end; ++trip) {
+                        const size_t idx = size_t(trip - begin);
                         const int minPossibleArrival = suffixBase[idx];
 
                         if (bestLocalArrival != never) {
@@ -283,14 +307,14 @@ private:
                             }
                         }
 
-                        if (it->arrivalTime < bestLocalArrival) {
-                            bestLocalArrival = it->arrivalTime;
+                        if (trip->arrivalTime < bestLocalArrival) {
+                            bestLocalArrival = trip->arrivalTime;
                         }
 
                         // Pass 'u' as the board stop
-                        scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
+                        scanTrip(trip->tripId, trip->departureStopIndex + 1, trip->arrivalTime, u, targetUpperBound);
                     }
-                    }
+                }
 
                 // Walk
                 const int walkArrival = graph.getWalkArrivalFrom(e, t);
