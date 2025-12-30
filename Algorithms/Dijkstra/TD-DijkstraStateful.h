@@ -214,17 +214,16 @@ private:
     template<typename STOP>
     inline void runRelaxation(const Vertex target, const STOP& stop) noexcept {
         profiler.startPhase(TDD::PHASE_MAIN_LOOP);
-        
+
         while (!Q.empty()) {
             const NodeLabel* cur = Q.extractFront();
-            
-            // FIX: Deduce vertex index from pointer math
-            const Vertex u = Vertex(cur - nodeLabels.data()); 
+            const Vertex u = Vertex(cur - nodeLabels.data());
             const int t = cur->arrivalTime;
+            const bool curReachedByWalking = cur->reachedByWalking;
 
             settleCount++;
             profiler.countMetric(TDD::METRIC_SETTLES);
-            
+
             int targetUpperBound = never;
             if constexpr (TARGET_PRUNING) {
                 if (target != noVertex) {
@@ -233,93 +232,130 @@ private:
                         targetUpperBound = targetLabel.arrivalTime;
                         if (t >= targetUpperBound) {
                             profiler.countMetric(TDD::METRIC_PRUNED_LABELS);
-                            continue; 
+                            continue;
                         }
                     }
                 }
             }
-            
+
             if (stop()) break;
 
-            const bool curReachedByWalking = cur->reachedByWalking;
-
-            // If enabled, compute the master index once per settled stop.
-            // This replaces per-edge binary searches with O(1) lookups.
-            int masterIndex = -1;
-            if constexpr (USE_FRACTIONAL_CASCADING) {
-                if (u < numberOfStops) {
-                    masterIndex = graph.getMasterIndex(u, t);
-                }
-            }
-            
-            // 1. CoreCH Backward (if enabled)
+            // 1. CoreCH Backward (Transfer to target)
             if (targetVertex != noVertex && initialTransfers && u < numberOfStops) {
                 const int backwardDist = initialTransfers->getBackwardDistance(u);
                 if (backwardDist != INFTY) {
-                    const int arrivalAtTarget = t + backwardDist;
-                    relaxWalking(targetVertex, u, State::AtStop, arrivalAtTarget, curReachedByWalking);
+                    relaxWalking(targetVertex, u, State::AtStop, t + backwardDist, curReachedByWalking);
                 }
             }
-            
+
             // 2. Scan Edges
-            for (const Edge e : graph.edgesFrom(u)) {
-                const Vertex v = graph.get(ToVertex, e);
+            if constexpr (USE_FRACTIONAL_CASCADING) {
+    const uint32_t transitStart = graph.transitMemberOffsets[u];
+    const uint32_t transitEnd = graph.transitMemberOffsets[u + 1];
 
-                if (u < numberOfStops) {
-                    const auto& atf = graph.get(Function, e);
-                    
-                    const DiscreteTrip* begin = graph.getTripsBegin(atf);
-                    const DiscreteTrip* end = graph.getTripsEnd(atf);
-                    const int* suffixBase = graph.getSuffixMinBegin(atf);
+    if (transitStart < transitEnd) {
+        Edge e0 = graph.transitEdges[transitStart];
+        CascadePointer ptr = graph.getInitialCascade(e0.value(), t);
 
-                    const DiscreteTrip* it = end;
-                    if constexpr (USE_FRACTIONAL_CASCADING) {
-                        // If the masterIndex is -1, there are no departures >= t for any outgoing transit edge.
-                        // In that case, we only consider walking below.
-                        if (masterIndex != -1) {
-                            uint32_t localOffset = 0;
-                            if (graph.getTripOffsetFC(e, masterIndex, localOffset)) {
-                                it = begin + std::min<uint32_t>(localOffset, (uint32_t)atf.tripCount);
-                            } else {
-                                it = std::lower_bound(begin, end, t,
-                                    [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
-                            }
-                        }
-                    } else {
-                        it = std::lower_bound(begin, end, t,
-                            [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+        auto updateBusProfile = [&](Edge e, const CascadePointer& cascadePtr) {
+            const auto& atf = graph.get(Function, e);
+            const Vertex v = graph.get(ToVertex, e);
+
+            // CRITICAL: Like non-FC, we need to scan ALL valid trips, not just one
+            // The pointer gives us the STARTING position
+            if (cascadePtr.edgeTripIndex < atf.tripCount) {
+                const DiscreteTrip* trips = graph.getTripsBegin(atf);
+                const int* suffixMinArrivals = graph.getSuffixMinBegin(atf);
+
+                int bestLocalArrival = never;
+                const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
+
+                // Scan from the starting position to the end
+                for (uint32_t idx = cascadePtr.edgeTripIndex; idx < atf.tripCount; ++idx) {
+                    const DiscreteTrip& trip = trips[idx];
+
+                    // Check if trip is catchable
+                    if (trip.departureTime < t) continue;
+
+                    const int minPossibleArrival = suffixMinArrivals[idx];
+
+                    // Prune if we've found better AND suffix min won't improve
+                    if (bestLocalArrival != never && minPossibleArrival > bestLocalArrival + bufferAtV) break;
+                    if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) break;
+
+                    if (trip.arrivalTime < bestLocalArrival) {
+                        bestLocalArrival = trip.arrivalTime;
                     }
 
-                    int bestLocalArrival = never;
-                    const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
-
-                    for (const DiscreteTrip* trip = it; trip != end; ++trip) {
-                        const size_t idx = size_t(trip - begin);
-                        const int minPossibleArrival = suffixBase[idx];
-
-                        if (bestLocalArrival != never) {
-                            if (minPossibleArrival > bestLocalArrival + bufferAtV) break; 
-                        }
-                        
-                        if constexpr (TARGET_PRUNING) {
-                            if (targetUpperBound != never) {
-                                if (minPossibleArrival >= targetUpperBound) break;
-                            }
-                        }
-
-                        if (trip->arrivalTime < bestLocalArrival) {
-                            bestLocalArrival = trip->arrivalTime;
-                        }
-
-                        // Pass 'u' as the board stop
-                        scanTrip(trip->tripId, trip->departureStopIndex + 1, trip->arrivalTime, u, targetUpperBound);
-                    }
+                    scanTrip(trip.tripId, trip.departureStopIndex + 1, trip.arrivalTime, u, targetUpperBound);
                 }
+            }
 
-                // Walk
-                const int walkArrival = graph.getWalkArrivalFrom(e, t);
-                if (walkArrival < never) {
-                    relaxWalking(v, u, State::AtStop, walkArrival, curReachedByWalking);
+            // Always relax walking
+            const int walkArrival = graph.getWalkArrivalFrom(e, t);
+            if (walkArrival < never) {
+                relaxWalking(graph.get(ToVertex, e), u, State::AtStop, walkArrival, curReachedByWalking);
+            }
+        };
+
+        if (ptr.edgeTripIndex != UINT32_MAX) {
+            updateBusProfile(e0, ptr);
+
+            for (uint32_t i = transitStart + 1; i < transitEnd; ++i) {
+                Edge e_prev = graph.transitEdges[i - 1];
+                Edge e_curr = graph.transitEdges[i];
+
+                ptr = graph.getNextCascade(e_prev.value(), e_curr.value(), ptr, t);
+                if (ptr.edgeTripIndex != UINT32_MAX) {
+                    updateBusProfile(e_curr, ptr);
+                }
+            }
+        }
+    }
+
+    // Process pure walking edges
+    const uint32_t walkStart = graph.walkingMemberOffsets[u];
+    const uint32_t walkEnd = graph.walkingMemberOffsets[u + 1];
+    for (uint32_t i = walkStart; i < walkEnd; ++i) {
+        Edge e_walk = graph.walkingEdges[i];
+        const int walkArrival = graph.getWalkArrivalFrom(e_walk, t);
+        if (walkArrival < never) {
+            relaxWalking(graph.get(ToVertex, e_walk), u, State::AtStop, walkArrival, curReachedByWalking);
+        }
+    }
+} else {
+                for (const Edge e : graph.edgesFrom(u)) {
+                    const Vertex v = graph.get(ToVertex, e);
+                    if (u < numberOfStops) {
+                        const auto& atf = graph.get(Function, e);
+                        const DiscreteTrip* begin = graph.getTripsBegin(atf);
+                        const DiscreteTrip* end = graph.getTripsEnd(atf);
+                        const int* suffixBase = graph.getSuffixMinBegin(atf);
+
+                        // Binary search for the first valid trip
+                        const DiscreteTrip* it = std::lower_bound(begin, end, t,
+                            [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+
+                        int bestLocalArrival = never;
+                        const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
+
+                        for (const DiscreteTrip* trip = it; trip != end; ++trip) {
+                            const size_t idx = size_t(trip - begin);
+                            const int minPossibleArrival = suffixBase[idx];
+
+                            if (bestLocalArrival != never && minPossibleArrival > bestLocalArrival + bufferAtV) break;
+                            if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) break;
+
+                            if (trip->arrivalTime < bestLocalArrival) bestLocalArrival = trip->arrivalTime;
+
+                            scanTrip(trip->tripId, trip->departureStopIndex + 1, trip->arrivalTime, u, targetUpperBound);
+                        }
+                    }
+                    // Standard Walking
+                    const int walkArrival = graph.getWalkArrivalFrom(e, t);
+                    if (walkArrival < never) {
+                        relaxWalking(v, u, State::AtStop, walkArrival, curReachedByWalking);
+                    }
                 }
             }
         }

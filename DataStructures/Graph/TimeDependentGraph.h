@@ -25,12 +25,7 @@ using TransferGraph = ::TransferGraph;
 // 1. Core Time-Dependent Data Structure
 // =========================================================================
 
-/*
-[CORE LOGIC] A single departure on a specific route.
 
-[USAGE] Stored in the  global 'allDiscreteTrips' vector in TimeDependentGraph.
-Accessed via binary search inside 'getArrivalTime' during edge relaxation.
-*/
 struct DiscreteTrip {
     int departureTime;
     int arrivalTime;
@@ -348,18 +343,6 @@ public:
                 };
             }
         }
-        // As a result of the above, Dijkstra can now traverse this "tape" containing
-        // all stop events for all trips by simply incrementing a pointer/index.
-        // This is handled by the CPU prefetcher very efficiently.
-
-        // 4. TRANSFER GRAPH PROCESSING
-        // Load static walking edges (transfers) into a map for easy merging.
-        // We extract edges from the static transferGraph and deduplicate them
-        // into a hash map (minTransferTimes), which is later used to merge walking options
-        // into transit edges, creating hybrid edges where possible.
-
-        // Declare a temporary hash map containing directed connections from source to target
-        // and the walking time in seconds (int).
         std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
 
         // Pre-allocate enough buckets to store every edge  from the input graph
@@ -577,219 +560,182 @@ public:
 
 // =========================================================================
 // 3. Fractional Cascading Optimized Class
-// =========================================================================
+// =========================================================================class TimeDependentGraphFC : public TimeDependentGraph {
+struct CascadePointer {
+    uint32_t edgeTripIndex;     // Index within THIS EDGE's trip list
+    uint32_t nextLocIndex;      // Index for next cascade jump
+};
 
 class TimeDependentGraphFC : public TimeDependentGraph {
-private:
-    // OPTIMIZATION: Fully flattened CSR layout for maximum cache locality.
-    // 1. Master Lists: Vertices -> Range in flatMasterDepartures
-    std::vector<uint32_t> masterOffsets;      // Size: numVertices + 1
-    std::vector<int> flatMasterDepartures;    // All master lists packed contiguously
-    
-    // 2. Cascading Pointers: Edges -> Range in flatCascadingPointers
-    // This removes the "vector of vectors" double indirection.
-    std::vector<uint32_t> cascadingOffsets;   // Size: numEdges + 1
-    std::vector<uint32_t> flatCascadingPointers; // All pointers packed contiguously
-
 public:
-    // Standard constructor
-    TimeDependentGraphFC() : TimeDependentGraph() {}
+    std::vector<int> flatMergedLists;
+    std::vector<uint32_t> mergedListOffsets;
+    std::vector<CascadePointer> flatPointers;
 
-    // Move constructor and assignment
-    TimeDependentGraphFC(TimeDependentGraphFC&& other) noexcept :
-        TimeDependentGraph(std::move(other)),
-        masterOffsets(std::move(other.masterOffsets)),
-        flatMasterDepartures(std::move(other.flatMasterDepartures)),
-        cascadingOffsets(std::move(other.cascadingOffsets)),
-        flatCascadingPointers(std::move(other.flatCascadingPointers)) {}
+    std::vector<uint32_t> transitMemberOffsets;
+    std::vector<Edge> transitEdges;
+    std::vector<uint32_t> walkingMemberOffsets;
+    std::vector<Edge> walkingEdges;
 
-    TimeDependentGraphFC& operator=(TimeDependentGraphFC&& other) noexcept {
-        TimeDependentGraph::operator=(std::move(other));
-        masterOffsets = std::move(other.masterOffsets);
-        flatMasterDepartures = std::move(other.flatMasterDepartures);
-        cascadingOffsets = std::move(other.cascadingOffsets);
-        flatCascadingPointers = std::move(other.flatCascadingPointers);
-        return *this;
+    inline bool isWalkingEdge(Edge e) const noexcept {
+        return this->get(Function, e).tripCount == 0;
     }
 
-    /**
-     * Finds the index in the master list for a vertex given a departure time.
-     */
-    inline int getMasterIndex(const Vertex u, const int time) const noexcept {
-        // [OPTIMIZATION] Unchecked access if u is guaranteed valid by caller
-        if ((size_t)u + 1 >= masterOffsets.size()) return -1;
-        
-        const uint32_t start = masterOffsets[u];
-        const uint32_t end = masterOffsets[u + 1];
-        
-        // Empty master list check
-        if (start == end) return -1;
+    inline CascadePointer getInitialCascade(uint32_t teIdx, int time) const noexcept {
+        if (teIdx + 1 >= mergedListOffsets.size()) return {UINT32_MAX, 0};
 
-        // [OPTIMIZATION] Direct pointer arithmetic on flat array
-        const int* beginPtr = &flatMasterDepartures[start];
-        const int* endPtr = &flatMasterDepartures[end];
+        uint32_t start = mergedListOffsets[teIdx];
+        uint32_t end   = mergedListOffsets[teIdx + 1];
+        if (start == end) return {UINT32_MAX, 0};
 
-        auto it = std::lower_bound(beginPtr, endPtr, time);
-        if (it == endPtr) return -1;
-        
-        return (int)(it - beginPtr);
+        const int* begin = flatMergedLists.data() + start;
+        const int* endp  = flatMergedLists.data() + end;
+        auto it = std::lower_bound(begin, endp, time);
+
+        if (it == endp) return {UINT32_MAX, 0};
+
+        uint32_t loc = (uint32_t)(it - begin);
+        return flatPointers[start + loc];
     }
 
-    /**
-     * Optimized Fractional Cascading query.
-     */
-    inline int getArrivalTimeFC(const Edge edge, const int departureTime, const int masterIndex) const noexcept {
-        // We use the public get() from the base class
-        const EdgeTripsHandle& h = this->get(Function, edge);
+    inline CascadePointer getNextCascade(uint32_t prevTeIdx, uint32_t currTeIdx,
+                                         const CascadePointer& prevPointer, int t) const noexcept {
+        uint32_t prevBase = mergedListOffsets[prevTeIdx];
+        uint32_t currBase = mergedListOffsets[currTeIdx];
 
-        // Fallback or bounds check logic moved to getTripOffsetFC equivalent inline here
-        // But since this function is rarely called directly compared to getTripOffsetFC + manual suffix min, 
-        // we keep it simple.
-        
-        uint32_t localOffset;
-        if (!getTripOffsetFC(edge, masterIndex, localOffset)) {
-             return this->getArrivalTime(edge, departureTime);
+        // Python logic: adjust location based on time
+        uint32_t adjustedLoc = prevPointer.nextLocIndex;
+        if (adjustedLoc > 0) {
+            uint32_t checkIdx = prevBase + adjustedLoc - 1;
+            if (checkIdx < flatMergedLists.size() && t <= flatMergedLists[checkIdx]) {
+                adjustedLoc--;
+            }
         }
 
-        int minArrivalTime = never;
-        if (localOffset < h.tripCount) {
-            minArrivalTime = allSuffixMinArrivals[h.firstSuffixIndex + localOffset];
+        if (currBase + adjustedLoc >= flatPointers.size()) {
+            return {UINT32_MAX, 0};
         }
 
-        if (h.walkTime != never) {
-            minArrivalTime = std::min(minArrivalTime, departureTime + h.walkTime);
-        }
-        return minArrivalTime;
-    }
-
-    /**
-     * Returns the precomputed local trip offset for this edge using the given master index.
-     *
-     * This is the core primitive needed to integrate FC into algorithms that still
-     * need to iterate individual trips (e.g. stateful scanTrip-based TD-Dijkstra).
-     *
-     * @return true if FC data exists for the edge and masterIndex is in range.
-     */
-    inline bool getTripOffsetFC(const Edge edge, const int masterIndex, uint32_t& outOffset) const noexcept {
-        // [OPTIMIZATION] Removed checks assuming caller ensures validity
-        if ((size_t)edge + 1 >= cascadingOffsets.size()) return false;
-        
-        const uint32_t start = cascadingOffsets[edge];
-        // If start == end (offset is equal to next offset), the range is empty
-        if (start == cascadingOffsets[edge + 1]) return false;
-        
-        // Calculate absolute position in the flat pointer array
-        // Note: masterIndex is relative to the Node's master list, which aligns with this edge's pointer list
-        const uint32_t absIndex = start + (uint32_t)masterIndex;
-        
-        // Safety check: is the requested index within this edge's allocated block?
-        // This implicitly checks masterIndex < size
-        if (absIndex >= cascadingOffsets[edge + 1]) return false;
-
-        outOffset = flatCascadingPointers[absIndex];
-        return true;
+        return flatPointers[currBase + adjustedLoc];
     }
 
     inline static TimeDependentGraphFC FromIntermediate(const Intermediate::Data& inter) noexcept {
-        // Build a temporary base graph
         TimeDependentGraph base = TimeDependentGraph::FromIntermediate(inter);
+        TimeDependentGraphFC g;
+        static_cast<TimeDependentGraph&>(g) = std::move(base);
 
-        TimeDependentGraphFC fcGraph;
-        // Slice-move the base part into the FC part
-        static_cast<TimeDependentGraph&>(fcGraph) = std::move(base);
+        const size_t numV = g.numVertices();
+        g.transitMemberOffsets.assign(numV + 1, 0);
+        g.walkingMemberOffsets.assign(numV + 1, 0);
 
-        std::cout << "Precomputing Fractional Cascading layers (CSR Layout)..." << std::endl;
+        uint32_t maxEdgeIdValue = 0;
+        for (size_t i = 0; i < numV; ++i) {
+            for (Edge e : g.edgesFrom(Vertex(i))) {
+                if (e.value() > maxEdgeIdValue) maxEdgeIdValue = e.value();
+            }
+        }
+        g.mergedListOffsets.assign(maxEdgeIdValue + 2, 0);
 
-        const size_t numV = fcGraph.numVertices();
-        const size_t numE = fcGraph.numEdges();
+        std::cout << "Building Fractional Cascading (matching Python exactly)..." << std::endl;
 
-        // Initialize Offsets
-        fcGraph.masterOffsets.reserve(numV + 1);
-        fcGraph.masterOffsets.push_back(0);
-        
-        fcGraph.cascadingOffsets.reserve(numE + 1);
-        fcGraph.cascadingOffsets.push_back(0);
-
-        // Pre-calculation passes to reserve memory (optional but good for perf)
-        // For simplicity, we just push_back.
-        
         for (size_t i = 0; i < numV; ++i) {
             Vertex u(i);
+            g.transitMemberOffsets[i] = (uint32_t)g.transitEdges.size();
+            g.walkingMemberOffsets[i] = (uint32_t)g.walkingEdges.size();
 
-            // 1. Build Master List for Node u
-            std::set<int> uniqueTimes;
-            bool hasTransit = false;
-
-            for (const Edge e : fcGraph.edgesFrom(u)) {
-                const EdgeTripsHandle& h = fcGraph.get(Function, e);
+            // Collect edges sorted by trip count (ascending, like Python)
+            std::vector<std::pair<Edge, const EdgeTripsHandle*>> edgePairs;
+            for (Edge e : g.edgesFrom(u)) {
+                const auto& h = g.get(Function, e);
                 if (h.tripCount > 0) {
-                    hasTransit = true;
-                    const DiscreteTrip* begin = fcGraph.getTripsBegin(h);
-                    for (size_t j = 0; j < h.tripCount; ++j) {
-                        uniqueTimes.insert(begin[j].departureTime);
-                    }
+                    edgePairs.push_back({e, &h});
+                } else {
+                    g.walkingEdges.push_back(e);
                 }
             }
 
-            // Append to flatMasterDepartures
-            if (hasTransit && !uniqueTimes.empty()) {
-                fcGraph.flatMasterDepartures.insert(fcGraph.flatMasterDepartures.end(), uniqueTimes.begin(), uniqueTimes.end());
-            }
-            // Update Master Offset (points to end of current block / start of next)
-            fcGraph.masterOffsets.push_back(fcGraph.flatMasterDepartures.size());
+            // Sort ascending by trip count (Python: key=lambda x: len(x[1].buses))
+            std::sort(edgePairs.begin(), edgePairs.end(),
+                     [](const auto& a, const auto& b) {
+                         return a.second->tripCount < b.second->tripCount;
+                     });
 
-            // 2. Build Cascading Pointers for all outgoing edges of u
-            // Note: The master list we just built applies to ALL edges from u.
-            // So we must iterate edges again and generate pointers for each.
-            
-            // Get the master list range we just added
-            const uint32_t masterStart = fcGraph.masterOffsets[i]; // i is current index, before push_back it was start
-            const uint32_t masterEnd = fcGraph.masterOffsets[i + 1];
-            // Actually, masterOffsets[i] is start, masterOffsets[i+1] is end. 
-            // We just pushed back size, so [i] and [i+1] are correct.
-            
-            // Convert to vector for easier indexing during pointer generation
-            // Optim: Avoid copy by using pointers to the flat array
-            // But we need random access.
-            
-            for (const Edge e : fcGraph.edgesFrom(u)) {
-                // Resize check for safety (though iteration order should match)
-                while (fcGraph.cascadingOffsets.size() <= (size_t)e) {
-                     fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
+            if (edgePairs.empty()) continue;
+
+            std::vector<std::vector<int>> m_arr;
+            std::vector<std::vector<int>> arr;
+            std::vector<Edge> orderedEdges;
+
+            // Build forward (Python builds forward then reverses)
+            for (size_t j = 0; j < edgePairs.size(); ++j) {
+                Edge e = edgePairs[j].first;
+                const EdgeTripsHandle* h = edgePairs[j].second;
+                const DiscreteTrip* trips = g.getTripsBegin(*h);
+
+                orderedEdges.push_back(e);
+
+                // Extract departure times
+                std::vector<int> currentArr;
+                currentArr.reserve(h->tripCount);
+                for (size_t k = 0; k < h->tripCount; ++k) {
+                    currentArr.push_back(trips[k].departureTime);
                 }
+                arr.push_back(currentArr);
 
-                const EdgeTripsHandle& h = fcGraph.get(Function, e);
-                
-                // Only generate pointers if the node has a master list AND this edge has trips
-                // (or if we want to store 'dummy' pointers for consistency).
-                // Standard FC requires pointers for every element in Master List.
-                
-                if (hasTransit && !uniqueTimes.empty()) { // Use bool flag instead of checking offsets distance
-                    const DiscreteTrip* tBegin = fcGraph.getTripsBegin(h);
-                    const DiscreteTrip* tEnd = fcGraph.getTripsEnd(h);
-                    
-                    // Iterate through the Master List segment we just created
-                    for (uint32_t mIdx = masterStart; mIdx < masterEnd; ++mIdx) {
-                        int t = fcGraph.flatMasterDepartures[mIdx];
-                        
-                        // Find where this time fits in the current edge's trip list
-                        auto it = std::lower_bound(tBegin, tEnd, t);
-                        uint32_t offset = (uint32_t)std::distance(tBegin, it);
-                        
-                        fcGraph.flatCascadingPointers.push_back(offset);
+                if (j == 0) {
+                    m_arr.push_back(currentArr);
+                } else {
+                    // Merge with every other element from previous m_arr
+                    std::vector<int> frac;
+                    for (size_t k = 1; k < m_arr[j - 1].size(); k += 2) {
+                        frac.push_back(m_arr[j - 1][k]);
                     }
+
+                    std::vector<int> merged;
+                    merged.reserve(currentArr.size() + frac.size());
+                    std::merge(currentArr.begin(), currentArr.end(),
+                              frac.begin(), frac.end(),
+                              std::back_inserter(merged));
+                    merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+                    m_arr.push_back(merged);
                 }
-                
-                // Update Cascading Offset for this edge
-                fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
+            }
+
+            // Reverse everything (Python does this)
+            std::reverse(m_arr.begin(), m_arr.end());
+            std::reverse(arr.begin(), arr.end());
+            std::reverse(orderedEdges.begin(), orderedEdges.end());
+
+            // Build pointers
+            for (size_t j = 0; j < orderedEdges.size(); ++j) {
+                Edge e = orderedEdges[j];
+                g.transitEdges.push_back(e);
+                g.mergedListOffsets[e.value()] = (uint32_t)g.flatMergedLists.size();
+
+                for (int val : m_arr[j]) {
+                    g.flatMergedLists.push_back(val);
+
+                    // Find position in THIS edge's trip list
+                    auto it = std::lower_bound(arr[j].begin(), arr[j].end(), val);
+                    uint32_t edgeTripIdx = (uint32_t)std::distance(arr[j].begin(), it);
+
+                    // Find position in next merged list
+                    uint32_t nextLocIdx = 0;
+                    if (j + 1 < m_arr.size()) {
+                        auto itNext = std::lower_bound(m_arr[j + 1].begin(), m_arr[j + 1].end(), val);
+                        nextLocIdx = (uint32_t)std::distance(m_arr[j + 1].begin(), itNext);
+                    }
+
+                    g.flatPointers.push_back({edgeTripIdx, nextLocIdx});
+                }
             }
         }
-        
-        // Fill remaining edge offsets if any (e.g. if last nodes have no edges or similar)
-        while (fcGraph.cascadingOffsets.size() <= numE) {
-             fcGraph.cascadingOffsets.push_back(fcGraph.flatCascadingPointers.size());
-        }
 
-        return fcGraph;
+        g.transitMemberOffsets[numV] = (uint32_t)g.transitEdges.size();
+        g.walkingMemberOffsets[numV] = (uint32_t)g.walkingEdges.size();
+        g.mergedListOffsets[maxEdgeIdValue + 1] = (uint32_t)g.flatMergedLists.size();
+
+        std::cout << " done." << std::endl;
+        return g;
     }
 };

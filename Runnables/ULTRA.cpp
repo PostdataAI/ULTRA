@@ -45,7 +45,6 @@ int main(int argc, char** argv) {
     new RunDijkstraRAPTORQueries(shell);
     new RunDijkstraRAPTORQueriesNoCH(shell);
     new RunTDDijkstraQueries(shell);
-    new RunTDDijkstraFullQueries(shell);
     new RunTDDijkstraQueriesFromBinary(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);
@@ -76,7 +75,6 @@ int main(int argc, char** argv) {
     new CheckDijkstraRAPTORPruning(shell);
     new CheckTDDijkstraPruning(shell);
     new CheckMCRPruning(shell);
-    new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);
     new CompareMRwithTDStatefulCoreCH(shell);
     new CompareMRwithTDStatefulCoreCHFC(shell);
