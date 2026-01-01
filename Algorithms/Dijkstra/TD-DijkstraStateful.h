@@ -261,11 +261,28 @@ private:
             const auto& atf = graph.get(Function, e);
             const Vertex v = graph.get(ToVertex, e);
 
-            // CRITICAL: Like non-FC, we need to scan ALL valid trips, not just one
-            // The pointer gives us the STARTING position
+            // Process transit trips if pointer is valid
             if (cascadePtr.edgeTripIndex < atf.tripCount) {
                 const DiscreteTrip* trips = graph.getTripsBegin(atf);
                 const int* suffixMinArrivals = graph.getSuffixMinBegin(atf);
+
+                // DEBUG: For failing queries, check pointer correctness
+                if constexpr (Debug) {
+                    // Find what binary search would return
+                    auto it = std::lower_bound(trips, trips + atf.tripCount, t,
+                        [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                    uint32_t binarySearchIdx = (uint32_t)std::distance(trips, it);
+
+                    if (cascadePtr.edgeTripIndex != binarySearchIdx) {
+                        std::cout << "FC POINTER MISMATCH at u=" << u << " v=" << v
+                                  << " t=" << t << std::endl;
+                        std::cout << "  FC pointer: " << cascadePtr.edgeTripIndex
+                                  << " (dep=" << (cascadePtr.edgeTripIndex < atf.tripCount ? trips[cascadePtr.edgeTripIndex].departureTime : -1) << ")" << std::endl;
+                        std::cout << "  Binary search: " << binarySearchIdx
+                                  << " (dep=" << (binarySearchIdx < atf.tripCount ? trips[binarySearchIdx].departureTime : -1) << ")" << std::endl;
+                        std::cout << "  Total trips on edge: " << atf.tripCount << std::endl;
+                    }
+                }
 
                 int bestLocalArrival = never;
                 const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
@@ -274,7 +291,8 @@ private:
                 for (uint32_t idx = cascadePtr.edgeTripIndex; idx < atf.tripCount; ++idx) {
                     const DiscreteTrip& trip = trips[idx];
 
-                    // Check if trip is catchable
+                    // CRITICAL: Trip departure times already have buffer subtracted
+                    // So we compare directly with arrival time t at vertex u
                     if (trip.departureTime < t) continue;
 
                     const int minPossibleArrival = suffixMinArrivals[idx];
@@ -283,6 +301,7 @@ private:
                     if (bestLocalArrival != never && minPossibleArrival > bestLocalArrival + bufferAtV) break;
                     if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) break;
 
+                    // Track best for pruning
                     if (trip.arrivalTime < bestLocalArrival) {
                         bestLocalArrival = trip.arrivalTime;
                     }
@@ -291,7 +310,7 @@ private:
                 }
             }
 
-            // Always relax walking
+            // Always relax walking (edges can have BOTH transit and walking)
             const int walkArrival = graph.getWalkArrivalFrom(e, t);
             if (walkArrival < never) {
                 relaxWalking(graph.get(ToVertex, e), u, State::AtStop, walkArrival, curReachedByWalking);

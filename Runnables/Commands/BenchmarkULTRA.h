@@ -1079,6 +1079,7 @@ public:
         algorithm_fc.getProfiler().printStatistics();
 
         // --- Compare results ---
+        // --- Compare results ---
         std::cout << "\n--- Comparison Results ---" << std::endl;
         bool results_match = true;
         size_t mismatchCount = 0;
@@ -1087,7 +1088,7 @@ public:
 
         for (size_t i = 0; i < n; ++i) {
             if (results_mr[i] != results_fc[i]) {
-                int diff = results_fc[i] - results_mr[i];  // TD arrival - MR arrival (positive = TD is worse)
+                int diff = results_fc[i] - results_mr[i];
                 if (diff > maxDiff) maxDiff = diff;
                 totalDiff += diff;
                 if (mismatchCount < 5) {
@@ -1098,6 +1099,20 @@ public:
                 results_match = false;
                 mismatchCount++;
             }
+        }
+
+        // ADD THIS DEBUG CODE HERE (before the success/failure message)
+        if (!results_match && n > 10) {
+            std::cout << "\n--- DEBUG: Re-running query 10 with debug output ---" << std::endl;
+
+            using TDDijkstraFCDebug = TimeDependentDijkstraStateful<TimeDependentGraphFC, TDD::NoProfiler, true, true, true>;
+            TDDijkstraFCDebug algorithm_fc_debug(graph_fc, raptorData.numberOfStops(), &ch);
+
+            const VertexQuery& debugQuery = queries[10];
+            algorithm_fc_debug.run(debugQuery.source, debugQuery.departureTime, debugQuery.target);
+            int debug_result = algorithm_fc_debug.getArrivalTime(debugQuery.target);
+
+            std::cout << "Debug result: " << debug_result << " (expected MR: " << results_mr[10] << ")" << std::endl;
         }
 
         if (results_match) {

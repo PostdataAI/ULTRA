@@ -560,8 +560,8 @@ public:
 
 // =========================================================================
 // 3. Fractional Cascading Optimized Class
-// =========================================================================class TimeDependentGraphFC : public TimeDependentGraph {
-struct CascadePointer {
+// =========================================================================class TimeDependentGraphFC : public TimeDependentGraph {struct CascadePointer {
+ struct CascadePointer {
     uint32_t edgeTripIndex;     // Index within THIS EDGE's trip list
     uint32_t nextLocIndex;      // Index for next cascade jump
 };
@@ -600,13 +600,14 @@ public:
 
     inline CascadePointer getNextCascade(uint32_t prevTeIdx, uint32_t currTeIdx,
                                          const CascadePointer& prevPointer, int t) const noexcept {
-        uint32_t prevBase = mergedListOffsets[prevTeIdx];
         uint32_t currBase = mergedListOffsets[currTeIdx];
+        uint32_t currEnd = mergedListOffsets[currTeIdx + 1];
 
-        // Python logic: adjust location based on time
+        // Python logic: check if time <= previous element in CURRENT list
         uint32_t adjustedLoc = prevPointer.nextLocIndex;
-        if (adjustedLoc > 0) {
-            uint32_t checkIdx = prevBase + adjustedLoc - 1;
+        if (adjustedLoc > 0 && adjustedLoc < (currEnd - currBase)) {
+            // Check the element BEFORE nextLocIndex in the CURRENT merged list
+            uint32_t checkIdx = currBase + adjustedLoc - 1;
             if (checkIdx < flatMergedLists.size() && t <= flatMergedLists[checkIdx]) {
                 adjustedLoc--;
             }
@@ -644,13 +645,16 @@ public:
             g.walkingMemberOffsets[i] = (uint32_t)g.walkingEdges.size();
 
             // Collect edges sorted by trip count (ascending, like Python)
+            // CRITICAL: Python sorts by len(buses), which means edges with walk+bus
+            // are sorted by bus count, but pure walk edges go to walking_nodes
             std::vector<std::pair<Edge, const EdgeTripsHandle*>> edgePairs;
             for (Edge e : g.edgesFrom(u)) {
                 const auto& h = g.get(Function, e);
-                if (h.tripCount > 0) {
-                    edgePairs.push_back({e, &h});
-                } else {
+                // An edge is "walking only" if tripCount == 0
+                if (h.tripCount == 0) {
                     g.walkingEdges.push_back(e);
+                } else {
+                    edgePairs.push_back({e, &h});
                 }
             }
 
@@ -674,7 +678,11 @@ public:
 
                 orderedEdges.push_back(e);
 
-                // Extract departure times
+                // CRITICAL: Python stores the ORIGINAL departure times (bus.d)
+                // NOT the adjusted times. So we need to extract from allDiscreteTrips
+                // which has already had buffers subtracted during graph construction.
+                // We're using these already-adjusted times for the merged lists,
+                // which is correct since queries will use adjusted times too.
                 std::vector<int> currentArr;
                 currentArr.reserve(h->tripCount);
                 for (size_t k = 0; k < h->tripCount; ++k) {
@@ -683,7 +691,13 @@ public:
                 arr.push_back(currentArr);
 
                 if (j == 0) {
-                    m_arr.push_back(currentArr);
+                    // CRITICAL: Python adds sentinel values [-1] at start and [huge number] at end
+                    std::vector<int> withSentinels;
+                    withSentinels.reserve(currentArr.size() + 2);
+                    withSentinels.push_back(-1);
+                    withSentinels.insert(withSentinels.end(), currentArr.begin(), currentArr.end());
+                    withSentinels.push_back(100000000);
+                    m_arr.push_back(withSentinels);
                 } else {
                     // Merge with every other element from previous m_arr
                     std::vector<int> frac;
@@ -692,11 +706,13 @@ public:
                     }
 
                     std::vector<int> merged;
-                    merged.reserve(currentArr.size() + frac.size());
+                    merged.reserve(currentArr.size() + frac.size() + 2);
+                    merged.push_back(-1);  // Sentinel at start
                     std::merge(currentArr.begin(), currentArr.end(),
                               frac.begin(), frac.end(),
                               std::back_inserter(merged));
-                    merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+                    merged.erase(std::unique(merged.begin() + 1, merged.end()), merged.end());  // Skip sentinel when deduping
+                    merged.push_back(100000000);  // Sentinel at end
                     m_arr.push_back(merged);
                 }
             }
@@ -712,14 +728,18 @@ public:
                 g.transitEdges.push_back(e);
                 g.mergedListOffsets[e.value()] = (uint32_t)g.flatMergedLists.size();
 
+                // CRITICAL FIX: Python's bisect_left finds the index in the ORIGINAL array (arr[i])
+                // NOT in the merged array (m_arr[i])
                 for (int val : m_arr[j]) {
                     g.flatMergedLists.push_back(val);
 
-                    // Find position in THIS edge's trip list
+                    // Python: bisect_left(arr[i], m_arr[i][j])
+                    // Find where this time value would go in the ORIGINAL edge's trip list
                     auto it = std::lower_bound(arr[j].begin(), arr[j].end(), val);
                     uint32_t edgeTripIdx = (uint32_t)std::distance(arr[j].begin(), it);
 
-                    // Find position in next merged list
+                    // Python: bisect_left(m_arr[i + 1], m_arr[i][j])
+                    // Find where this time value would go in the NEXT merged list
                     uint32_t nextLocIdx = 0;
                     if (j + 1 < m_arr.size()) {
                         auto itNext = std::lower_bound(m_arr[j + 1].begin(), m_arr[j + 1].end(), val);
