@@ -728,13 +728,14 @@ public:
                 g.transitEdges.push_back(e);
                 g.mergedListOffsets[e.value()] = (uint32_t)g.flatMergedLists.size();
 
-                // CRITICAL FIX: Python's bisect_left finds the index in the ORIGINAL array (arr[i])
-                // NOT in the merged array (m_arr[i])
-                for (int val : m_arr[j]) {
+                // CRITICAL: m_arr[j] has sentinels [-1, ..., 100000000]
+                // We need to skip the sentinels when storing and when computing pointers
+                for (size_t idx = 1; idx < m_arr[j].size() - 1; ++idx) {  // Skip first and last (sentinels)
+                    int val = m_arr[j][idx];
                     g.flatMergedLists.push_back(val);
 
                     // Python: bisect_left(arr[i], m_arr[i][j])
-                    // Find where this time value would go in the ORIGINAL edge's trip list
+                    // Find where this time value would go in the ORIGINAL edge's trip list (no sentinels)
                     auto it = std::lower_bound(arr[j].begin(), arr[j].end(), val);
                     uint32_t edgeTripIdx = (uint32_t)std::distance(arr[j].begin(), it);
 
@@ -742,8 +743,11 @@ public:
                     // Find where this time value would go in the NEXT merged list
                     uint32_t nextLocIdx = 0;
                     if (j + 1 < m_arr.size()) {
+                        // m_arr[j+1] also has sentinels, so search in the full array
                         auto itNext = std::lower_bound(m_arr[j + 1].begin(), m_arr[j + 1].end(), val);
-                        nextLocIdx = (uint32_t)std::distance(m_arr[j + 1].begin(), itNext);
+                        // But subtract 1 because the first element is the -1 sentinel
+                        uint32_t rawIdx = (uint32_t)std::distance(m_arr[j + 1].begin(), itNext);
+                        nextLocIdx = (rawIdx > 0) ? (rawIdx - 1) : 0;
                     }
 
                     g.flatPointers.push_back({edgeTripIdx, nextLocIdx});
