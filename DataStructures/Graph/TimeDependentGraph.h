@@ -559,8 +559,8 @@ public:
 };
 
 // =========================================================================
-// 3. Fractional Cascading Optimized Class
-// =========================================================================class TimeDependentGraphFC : public TimeDependentGraph {struct CascadePointer {
+// Fractional Cascading - V7 FIXED: Store EdgeTripsHandle by VALUE not pointer
+// =========================================================================
 
 struct CascadePointer {
     uint32_t edgeTripIndex;
@@ -572,40 +572,22 @@ public:
     std::vector<int> flatMergedLists;
     std::vector<CascadePointer> flatPointers;
     std::vector<uint32_t> fcOffsets;
-
     std::vector<uint32_t> transitMemberOffsets;
     std::vector<Edge> transitEdges;
     std::vector<uint32_t> walkingMemberOffsets;
     std::vector<Edge> walkingEdges;
 
-    // DEBUG: Store edge-to-sequential-index mapping
-    std::vector<uint32_t> edgeToFcIndex;  // edgeToFcIndex[edge.value()] = index in transitEdges
-
-    inline bool isWalkingEdge(Edge e) const noexcept {
-        return this->get(Function, e).tripCount == 0;
-    }
+    inline bool isWalkingEdge(Edge e) const noexcept { return this->get(Function, e).tripCount == 0; }
 
     inline CascadePointer getInitialCascade(uint32_t seqIdx, int time) const noexcept {
-        if (seqIdx >= fcOffsets.size() - 1) {
-            return {UINT32_MAX, 0};
-        }
-
+        if (seqIdx >= fcOffsets.size() - 1) return {UINT32_MAX, 0};
         uint32_t start = fcOffsets[seqIdx];
         uint32_t end = fcOffsets[seqIdx + 1];
-
-        if (start == end) {
-            return {UINT32_MAX, 0};
-        }
-
+        if (start == end) return {UINT32_MAX, 0};
         const int* begin = flatMergedLists.data() + start;
         const int* endp = flatMergedLists.data() + end;
-
         auto it = std::lower_bound(begin, endp, time);
-
-        if (it == endp) {
-            return {UINT32_MAX, 0};
-        }
-
+        if (it == endp) return {UINT32_MAX, 0};
         uint32_t loc = (uint32_t)(it - begin);
         return flatPointers[start + loc];
     }
@@ -613,104 +595,51 @@ public:
     inline CascadePointer getNextCascade(uint32_t prevSeqIdx, uint32_t currSeqIdx,
                                          const CascadePointer& prevPointer, int t) const noexcept {
         (void)prevSeqIdx;
-
-        if (currSeqIdx >= fcOffsets.size() - 1) {
-            return {UINT32_MAX, 0};
-        }
-
+        if (currSeqIdx >= fcOffsets.size() - 1) return {UINT32_MAX, 0};
         uint32_t currBase = fcOffsets[currSeqIdx];
         uint32_t currEnd = fcOffsets[currSeqIdx + 1];
         uint32_t currSize = currEnd - currBase;
-
-        if (currSize == 0) {
-            return {UINT32_MAX, 0};
-        }
-
+        if (currSize == 0) return {UINT32_MAX, 0};
         uint32_t next_loc = prevPointer.nextLocIndex;
-
         uint32_t useIdx;
         if (next_loc > 0 && next_loc <= currSize) {
             int valAtPrev = flatMergedLists[currBase + next_loc - 1];
-            if (t <= valAtPrev) {
-                useIdx = next_loc - 1;
-            } else {
-                useIdx = next_loc;
-            }
-        } else if (next_loc == 0) {
-            useIdx = 0;
-        } else {
-            useIdx = next_loc;
-        }
-
-        if (useIdx >= currSize) {
-            return {UINT32_MAX, 0};
-        }
-
+            useIdx = (t <= valAtPrev) ? (next_loc - 1) : next_loc;
+        } else if (next_loc == 0) { useIdx = 0; }
+        else { useIdx = next_loc; }
+        if (useIdx >= currSize) return {UINT32_MAX, 0};
         return flatPointers[currBase + useIdx];
     }
 
-    // DEBUG FUNCTION: Verify FC data for a specific vertex
     void debugVertex(Vertex u, int queryTime) const {
         uint32_t transitStart = transitMemberOffsets[u];
         uint32_t transitEnd = transitMemberOffsets[u + 1];
-
         std::cout << "\n=== DEBUG Vertex " << u << " at time " << queryTime << " ===" << std::endl;
         std::cout << "Transit edges: " << (transitEnd - transitStart) << std::endl;
-
         for (uint32_t i = transitStart; i < transitEnd && i < transitStart + 3; ++i) {
             Edge e = transitEdges[i];
             const auto& h = this->get(Function, e);
             Vertex v = this->get(ToVertex, e);
-
             std::cout << "\nEdge " << (i - transitStart) << " (seqIdx=" << i << ", edgeId=" << e.value()
                       << ") -> v=" << v << ", tripCount=" << h.tripCount << std::endl;
-
-            // Show actual trip departures
             const DiscreteTrip* trips = this->getTripsBegin(h);
             std::cout << "  Actual trips (first 5): ";
-            for (uint32_t k = 0; k < std::min(h.tripCount, 5u); ++k) {
-                std::cout << trips[k].departureTime << " ";
-            }
+            for (uint32_t k = 0; k < std::min(h.tripCount, 5u); ++k) std::cout << trips[k].departureTime << " ";
             std::cout << std::endl;
-
-            // Show FC merged list
             uint32_t fcStart = fcOffsets[i];
             uint32_t fcEnd = fcOffsets[i + 1];
             std::cout << "  FC merged list (first 10 of " << (fcEnd - fcStart) << "): ";
-            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k) {
-                std::cout << flatMergedLists[k] << " ";
-            }
+            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k) std::cout << flatMergedLists[k] << " ";
             std::cout << std::endl;
-
-            // Show FC pointers
             std::cout << "  FC pointers (first 10): ";
-            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k) {
-                std::cout << "(" << flatPointers[k].edgeTripIndex << ","
-                          << flatPointers[k].nextLocIndex << ") ";
-            }
+            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k)
+                std::cout << "(" << flatPointers[k].edgeTripIndex << "," << flatPointers[k].nextLocIndex << ") ";
             std::cout << std::endl;
-
-            // Test getInitialCascade
             CascadePointer ptr = getInitialCascade(i, queryTime);
-            std::cout << "  getInitialCascade(" << i << ", " << queryTime << ") = ("
-                      << ptr.edgeTripIndex << ", " << ptr.nextLocIndex << ")" << std::endl;
-
-            // What binary search would give
+            std::cout << "  getInitialCascade(" << i << ", " << queryTime << ") = (" << ptr.edgeTripIndex << ", " << ptr.nextLocIndex << ")" << std::endl;
             auto it = std::lower_bound(trips, trips + h.tripCount, queryTime,
                 [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
-            uint32_t bsIdx = (uint32_t)std::distance(trips, it);
-            std::cout << "  Binary search result: " << bsIdx << std::endl;
-
-            // Trace lower_bound on merged list
-            const int* mlBegin = flatMergedLists.data() + fcStart;
-            const int* mlEnd = flatMergedLists.data() + fcEnd;
-            auto mlIt = std::lower_bound(mlBegin, mlEnd, queryTime);
-            uint32_t mlIdx = (uint32_t)(mlIt - mlBegin);
-            std::cout << "  lower_bound on merged list: idx=" << mlIdx;
-            if (mlIt != mlEnd) {
-                std::cout << " (value=" << *mlIt << ")";
-            }
-            std::cout << std::endl;
+            std::cout << "  Binary search result: " << (uint32_t)std::distance(trips, it) << std::endl;
         }
     }
 
@@ -723,94 +652,159 @@ public:
         g.transitMemberOffsets.assign(numV + 1, 0);
         g.walkingMemberOffsets.assign(numV + 1, 0);
 
-        // Find max edge ID
-        uint32_t maxEdgeId = 0;
-        for (size_t i = 0; i < numV; ++i) {
-            for (Edge e : g.edgesFrom(Vertex(i))) {
-                if (e.value() > maxEdgeId) maxEdgeId = e.value();
-            }
-        }
-        g.edgeToFcIndex.assign(maxEdgeId + 1, UINT32_MAX);
+        std::cout << "Building Fractional Cascading..." << std::endl;
+        std::cout << "  numVertices = " << numV << std::endl;
 
-        std::cout << "Building Fractional Cascading..." << std::flush;
+        size_t totalMergedElements = 0;
+        size_t debugCount = 0;
+        bool foundDebugVertex = false;
 
-        for (size_t i = 0; i < numV; ++i) {
-            Vertex u(i);
-            g.transitMemberOffsets[i] = (uint32_t)g.transitEdges.size();
-            g.walkingMemberOffsets[i] = (uint32_t)g.walkingEdges.size();
+        for (size_t vertexIdx = 0; vertexIdx < numV; ++vertexIdx) {
+            Vertex u(vertexIdx);
+            g.transitMemberOffsets[vertexIdx] = (uint32_t)g.transitEdges.size();
+            g.walkingMemberOffsets[vertexIdx] = (uint32_t)g.walkingEdges.size();
 
-            std::vector<std::pair<Edge, const EdgeTripsHandle*>> edgePairs;
+            // FIXED: Store EdgeTripsHandle BY VALUE, not by pointer!
+            // The previous code stored pointers that became dangling.
+            std::vector<std::pair<Edge, EdgeTripsHandle>> edgePairs;
             for (Edge e : g.edgesFrom(u)) {
-                const auto& h = g.get(Function, e);
+                EdgeTripsHandle h = g.get(Function, e);  // Copy by value!
                 if (h.tripCount == 0) {
                     g.walkingEdges.push_back(e);
                 } else {
-                    edgePairs.push_back({e, &h});
+                    edgePairs.push_back({e, h});  // Store copy, not pointer
                 }
             }
 
-            std::sort(edgePairs.begin(), edgePairs.end(),
-                     [](const auto& a, const auto& b) {
-                         return a.second->tripCount < b.second->tripCount;
-                     });
-
             if (edgePairs.empty()) continue;
 
-            std::vector<std::vector<int>> m_arr;
-            std::vector<std::vector<int>> arr;
-            std::vector<Edge> orderedEdges;
+            // Sort by trip count ascending
+            std::sort(edgePairs.begin(), edgePairs.end(),
+                     [](const auto& a, const auto& b) { return a.second.tripCount < b.second.tripCount; });
 
-            for (size_t j = 0; j < edgePairs.size(); ++j) {
-                Edge e = edgePairs[j].first;
-                const EdgeTripsHandle* h = edgePairs[j].second;
-                const DiscreteTrip* trips = g.getTripsBegin(*h);
-
-                orderedEdges.push_back(e);
-
-                std::vector<int> currentArr;
-                currentArr.reserve(h->tripCount);
-                for (size_t k = 0; k < h->tripCount; ++k) {
-                    currentArr.push_back(trips[k].departureTime);
+            // DEBUG: Print info for vertex 23187
+            bool isDebugVertex = (vertexIdx == 23187);
+            if (isDebugVertex) {
+                foundDebugVertex = true;
+                std::cout << "\n  === CONSTRUCTING FC FOR VERTEX 23187 ===" << std::endl;
+                std::cout << "  Number of transit edges: " << edgePairs.size() << std::endl;
+                for (size_t j = 0; j < edgePairs.size(); ++j) {
+                    std::cout << "    Edge " << j << ": tripCount=" << edgePairs[j].second.tripCount
+                              << ", edgeId=" << edgePairs[j].first.value() << std::endl;
                 }
-                arr.push_back(currentArr);
+            }
+
+            // Build arr (original departure times for each edge)
+            std::vector<std::vector<int>> arr;
+            arr.reserve(edgePairs.size());
+            for (size_t j = 0; j < edgePairs.size(); ++j) {
+                const auto& ep = edgePairs[j];
+                const DiscreteTrip* trips = g.getTripsBegin(ep.second);  // Use value, not pointer
+                std::vector<int> edgeDeps;
+                edgeDeps.reserve(ep.second.tripCount);
+                for (size_t k = 0; k < ep.second.tripCount; ++k) {
+                    edgeDeps.push_back(trips[k].departureTime);
+                }
+                arr.push_back(std::move(edgeDeps));
+
+                if (isDebugVertex) {
+                    std::cout << "    arr[" << j << "].size() = " << arr[j].size();
+                    if (!arr[j].empty()) {
+                        std::cout << " (first: " << arr[j][0] << ", last: " << arr[j].back() << ")";
+                    }
+                    std::cout << std::endl;
+                }
+            }
+
+            // Build m_arr (merged lists with fractional cascading)
+            std::vector<std::vector<int>> m_arr;
+            m_arr.reserve(edgePairs.size());
+
+            for (size_t j = 0; j < arr.size(); ++j) {
+                std::vector<int> merged;
 
                 if (j == 0) {
-                    std::vector<int> withSentinels;
-                    withSentinels.push_back(-1);
-                    withSentinels.insert(withSentinels.end(), currentArr.begin(), currentArr.end());
-                    withSentinels.push_back(100000000);
-                    m_arr.push_back(withSentinels);
+                    merged = arr[j];
+                    if (isDebugVertex) {
+                        std::cout << "    m_arr[0] = arr[0] (size=" << merged.size() << ")" << std::endl;
+                    }
                 } else {
+                    // Take every other element from previous m_arr (odd indices)
                     std::vector<int> frac;
                     for (size_t k = 1; k < m_arr[j - 1].size(); k += 2) {
                         frac.push_back(m_arr[j - 1][k]);
                     }
 
-                    std::vector<int> merged = currentArr;
+                    if (isDebugVertex) {
+                        std::cout << "    Fractional from m_arr[" << (j-1) << "]: " << frac.size() << " elements" << std::endl;
+                    }
+
+                    merged = arr[j];
                     merged.insert(merged.end(), frac.begin(), frac.end());
                     std::sort(merged.begin(), merged.end());
                     merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
 
-                    std::vector<int> withSentinels;
-                    withSentinels.push_back(-1);
-                    withSentinels.insert(withSentinels.end(), merged.begin(), merged.end());
-                    withSentinels.push_back(100000000);
-                    m_arr.push_back(withSentinels);
+                    if (isDebugVertex) {
+                        std::cout << "    m_arr[" << j << "] after merge: " << merged.size() << " elements" << std::endl;
+                    }
+                }
+
+                // Add sentinels
+                std::vector<int> withSentinels;
+                withSentinels.reserve(merged.size() + 2);
+                withSentinels.push_back(-1);
+                withSentinels.insert(withSentinels.end(), merged.begin(), merged.end());
+                withSentinels.push_back(100000000);
+                m_arr.push_back(std::move(withSentinels));
+
+                if (isDebugVertex) {
+                    std::cout << "    m_arr[" << j << "] with sentinels: " << m_arr[j].size() << " elements" << std::endl;
                 }
             }
 
-            // REVERSE
+            if (isDebugVertex) {
+                std::cout << "  Before reversal:" << std::endl;
+                for (size_t j = 0; j < m_arr.size(); ++j) {
+                    std::cout << "    m_arr[" << j << "].size() = " << m_arr[j].size() << std::endl;
+                }
+            }
+
+            // REVERSE everything to match Python
             std::reverse(m_arr.begin(), m_arr.end());
             std::reverse(arr.begin(), arr.end());
+
+            // Build orderedEdges and reverse
+            std::vector<Edge> orderedEdges;
+            for (const auto& ep : edgePairs) orderedEdges.push_back(ep.first);
             std::reverse(orderedEdges.begin(), orderedEdges.end());
 
+            if (isDebugVertex) {
+                std::cout << "  After reversal:" << std::endl;
+                for (size_t j = 0; j < m_arr.size(); ++j) {
+                    std::cout << "    m_arr[" << j << "].size() = " << m_arr[j].size()
+                              << ", arr[" << j << "].size() = " << arr[j].size()
+                              << ", edge=" << orderedEdges[j].value() << std::endl;
+                }
+            }
+
+            // Store edges and FC data
             for (size_t j = 0; j < orderedEdges.size(); ++j) {
                 Edge e = orderedEdges[j];
-                uint32_t seqIdx = (uint32_t)g.transitEdges.size();
                 g.transitEdges.push_back(e);
-                g.edgeToFcIndex[e.value()] = seqIdx;
                 g.fcOffsets.push_back((uint32_t)g.flatMergedLists.size());
 
+                if (isDebugVertex) {
+                    std::cout << "  Storing edge " << j << " (edgeId=" << e.value() << "):" << std::endl;
+                    std::cout << "    fcOffset = " << g.fcOffsets.back() << std::endl;
+                    std::cout << "    m_arr[" << j << "] has " << m_arr[j].size() << " elements" << std::endl;
+                    std::cout << "    First 10 elements: ";
+                    for (size_t k = 0; k < std::min(m_arr[j].size(), (size_t)10); ++k) {
+                        std::cout << m_arr[j][k] << " ";
+                    }
+                    std::cout << std::endl;
+                }
+
+                // Store merged list and compute pointers
                 for (size_t idx = 0; idx < m_arr[j].size(); ++idx) {
                     int val = m_arr[j][idx];
                     g.flatMergedLists.push_back(val);
@@ -826,6 +820,14 @@ public:
 
                     g.flatPointers.push_back({edgeTripIdx, nextLocIdx});
                 }
+
+                totalMergedElements += m_arr[j].size();
+            }
+
+            // Generic debug for first few vertices with multiple edges
+            if (debugCount < 2 && edgePairs.size() >= 3 && !isDebugVertex) {
+                std::cout << "  Sample vertex " << vertexIdx << ": " << edgePairs.size() << " edges" << std::endl;
+                debugCount++;
             }
         }
 
@@ -837,31 +839,26 @@ public:
         std::cout << "  Transit edges: " << g.transitEdges.size() << std::endl;
         std::cout << "  Walking edges: " << g.walkingEdges.size() << std::endl;
         std::cout << "  FC data elements: " << g.flatMergedLists.size() << std::endl;
+        std::cout << "  Total merged elements (computed): " << totalMergedElements << std::endl;
+
+        if (!foundDebugVertex) {
+            std::cout << "  WARNING: Vertex 23187 was not found!" << std::endl;
+        }
 
         return g;
     }
 
     inline void serialize(const std::string& fileName) const noexcept {
         TimeDependentGraph::serialize(fileName);
-        IO::serialize(fileName + ".fc",
-            flatMergedLists, flatPointers, fcOffsets,
-            transitMemberOffsets, transitEdges,
-            walkingMemberOffsets, walkingEdges,
-            edgeToFcIndex);
+        IO::serialize(fileName + ".fc", flatMergedLists, flatPointers, fcOffsets,
+            transitMemberOffsets, transitEdges, walkingMemberOffsets, walkingEdges);
     }
-
     inline void deserialize(const std::string& fileName) noexcept {
         TimeDependentGraph::deserialize(fileName);
-        IO::deserialize(fileName + ".fc",
-            flatMergedLists, flatPointers, fcOffsets,
-            transitMemberOffsets, transitEdges,
-            walkingMemberOffsets, walkingEdges,
-            edgeToFcIndex);
+        IO::deserialize(fileName + ".fc", flatMergedLists, flatPointers, fcOffsets,
+            transitMemberOffsets, transitEdges, walkingMemberOffsets, walkingEdges);
     }
-
     inline static TimeDependentGraphFC FromBinary(const std::string& fileName) noexcept {
-        TimeDependentGraphFC g;
-        g.deserialize(fileName);
-        return g;
+        TimeDependentGraphFC g; g.deserialize(fileName); return g;
     }
 };

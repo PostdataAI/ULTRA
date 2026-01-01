@@ -1103,17 +1103,31 @@ public:
 
         // ADD THIS DEBUG CODE HERE (before the success/failure message)
         if (!results_match && n > 10) {
-            std::cout << "\n--- DEBUG: Re-running query 10 with debug output ---" << std::endl;
+            std::cout << "\n--- DEBUG: Investigating FC data for failing query ---" << std::endl;
 
-            using TDDijkstraFCDebug = TimeDependentDijkstraStateful<TimeDependentGraphFC, TDD::NoProfiler, true, true, true>;
-            TDDijkstraFCDebug algorithm_fc_debug(graph_fc, raptorData.numberOfStops(), &ch);
+            // Pick a query that failed (e.g., query 10 or the first mismatch)
+            size_t failingQueryIdx = 0;
+            for (size_t i = 0; i < n; ++i) {
+                if (results_mr[i] != results_fc[i]) {
+                    failingQueryIdx = i;
+                    break;
+                }
+            }
 
-            const VertexQuery& debugQuery = queries[10];
-            algorithm_fc_debug.run(debugQuery.source, debugQuery.departureTime, debugQuery.target);
-            int debug_result = algorithm_fc_debug.getArrivalTime(debugQuery.target);
+            const VertexQuery& failQuery = queries[failingQueryIdx];
+            std::cout << "Query " << failingQueryIdx << ": source=" << failQuery.source
+                      << ", target=" << failQuery.target
+                      << ", depTime=" << failQuery.departureTime << std::endl;
 
-            std::cout << "Debug result: " << debug_result << " (expected MR: " << results_mr[10] << ")" << std::endl;
+            // Debug the source vertex's FC data
+            graph_fc.debugVertex(Vertex(failQuery.source), failQuery.departureTime);
+
+            // Also check a few vertices from the debug output that showed mismatches
+            // For example, vertex 23187 with time 35408:
+            std::cout << "\n--- Checking vertex 23187 ---" << std::endl;
+            graph_fc.debugVertex(Vertex(23187), 35408);
         }
+
 
         if (results_match) {
             std::cout << "SUCCESS: All " << n << " results match!" << std::endl;

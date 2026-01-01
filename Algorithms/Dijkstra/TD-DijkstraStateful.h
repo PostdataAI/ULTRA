@@ -269,18 +269,21 @@ private:
                 const int* suffixMinArrivals = graph.getSuffixMinBegin(atf);
 
                 if constexpr (Debug) {
-                    auto it = std::lower_bound(trips, trips + atf.tripCount, t,
-                        [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
-                    uint32_t binarySearchIdx = (uint32_t)std::distance(trips, it);
+                    const auto& atf = graph.get(Function, e0);
+                    std::cout << "\nProcessing vertex " << u << " at time " << t << std::endl;
+                    std::cout << "  transitStart=" << transitStart << ", transitEnd=" << transitEnd << std::endl;
+                    std::cout << "  First edge id=" << e0.value() << ", tripCount=" << atf.tripCount << std::endl;
 
-                    if (cascadePtr.edgeTripIndex != binarySearchIdx) {
-                        std::cout << "FC POINTER MISMATCH at u=" << u << " v=" << v
-                                  << " t=" << t << std::endl;
-                        std::cout << "  FC pointer: " << cascadePtr.edgeTripIndex
-                                  << " (dep=" << (cascadePtr.edgeTripIndex < atf.tripCount ? trips[cascadePtr.edgeTripIndex].departureTime : -1) << ")" << std::endl;
-                        std::cout << "  Binary search: " << binarySearchIdx
-                                  << " (dep=" << (binarySearchIdx < atf.tripCount ? trips[binarySearchIdx].departureTime : -1) << ")" << std::endl;
-                        std::cout << "  Total trips on edge: " << atf.tripCount << std::endl;
+                    // Check what's in the FC data for this index
+                    if (transitStart < graph.fcOffsets.size() - 1) {
+                        uint32_t fcStart = graph.fcOffsets[transitStart];
+                        uint32_t fcEnd = graph.fcOffsets[transitStart + 1];
+                        std::cout << "  FC data range: [" << fcStart << ", " << fcEnd << ")" << std::endl;
+                        std::cout << "  FC merged list (first 5): ";
+                        for (uint32_t k = fcStart; k < std::min(fcStart + 5, fcEnd); ++k) {
+                            std::cout << graph.flatMergedLists[k] << " ";
+                        }
+                        std::cout << std::endl;
                     }
                 }
 
