@@ -254,21 +254,21 @@ private:
     const uint32_t transitEnd = graph.transitMemberOffsets[u + 1];
 
     if (transitStart < transitEnd) {
+        // transitStart IS the sequential index for the first edge
         Edge e0 = graph.transitEdges[transitStart];
-        CascadePointer ptr = graph.getInitialCascade(e0.value(), t);
+
+        // Pass transitStart (sequential index), NOT e0.value() (edge ID)
+        CascadePointer ptr = graph.getInitialCascade(transitStart, t);
 
         auto updateBusProfile = [&](Edge e, const CascadePointer& cascadePtr) {
             const auto& atf = graph.get(Function, e);
             const Vertex v = graph.get(ToVertex, e);
 
-            // Process transit trips if pointer is valid
             if (cascadePtr.edgeTripIndex < atf.tripCount) {
                 const DiscreteTrip* trips = graph.getTripsBegin(atf);
                 const int* suffixMinArrivals = graph.getSuffixMinBegin(atf);
 
-                // DEBUG: For failing queries, check pointer correctness
                 if constexpr (Debug) {
-                    // Find what binary search would return
                     auto it = std::lower_bound(trips, trips + atf.tripCount, t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     uint32_t binarySearchIdx = (uint32_t)std::distance(trips, it);
@@ -287,21 +287,16 @@ private:
                 int bestLocalArrival = never;
                 const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
-                // Scan from the starting position to the end
                 for (uint32_t idx = cascadePtr.edgeTripIndex; idx < atf.tripCount; ++idx) {
                     const DiscreteTrip& trip = trips[idx];
 
-                    // CRITICAL: Trip departure times already have buffer subtracted
-                    // So we compare directly with arrival time t at vertex u
                     if (trip.departureTime < t) continue;
 
                     const int minPossibleArrival = suffixMinArrivals[idx];
 
-                    // Prune if we've found better AND suffix min won't improve
                     if (bestLocalArrival != never && minPossibleArrival > bestLocalArrival + bufferAtV) break;
                     if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) break;
 
-                    // Track best for pruning
                     if (trip.arrivalTime < bestLocalArrival) {
                         bestLocalArrival = trip.arrivalTime;
                     }
@@ -310,7 +305,6 @@ private:
                 }
             }
 
-            // Always relax walking (edges can have BOTH transit and walking)
             const int walkArrival = graph.getWalkArrivalFrom(e, t);
             if (walkArrival < never) {
                 relaxWalking(graph.get(ToVertex, e), u, State::AtStop, walkArrival, curReachedByWalking);
@@ -320,11 +314,13 @@ private:
         if (ptr.edgeTripIndex != UINT32_MAX) {
             updateBusProfile(e0, ptr);
 
+            // Use sequential indices (i, i+1) instead of edge IDs
             for (uint32_t i = transitStart + 1; i < transitEnd; ++i) {
-                Edge e_prev = graph.transitEdges[i - 1];
                 Edge e_curr = graph.transitEdges[i];
 
-                ptr = graph.getNextCascade(e_prev.value(), e_curr.value(), ptr, t);
+                // Pass sequential indices: (i-1, i) instead of (e_prev.value(), e_curr.value())
+                ptr = graph.getNextCascade(i - 1, i, ptr, t);
+
                 if (ptr.edgeTripIndex != UINT32_MAX) {
                     updateBusProfile(e_curr, ptr);
                 }

@@ -561,63 +561,157 @@ public:
 // =========================================================================
 // 3. Fractional Cascading Optimized Class
 // =========================================================================class TimeDependentGraphFC : public TimeDependentGraph {struct CascadePointer {
- struct CascadePointer {
-    uint32_t edgeTripIndex;     // Index within THIS EDGE's trip list
-    uint32_t nextLocIndex;      // Index for next cascade jump
+
+struct CascadePointer {
+    uint32_t edgeTripIndex;
+    uint32_t nextLocIndex;
 };
 
 class TimeDependentGraphFC : public TimeDependentGraph {
 public:
     std::vector<int> flatMergedLists;
-    std::vector<uint32_t> mergedListOffsets;
     std::vector<CascadePointer> flatPointers;
+    std::vector<uint32_t> fcOffsets;
 
     std::vector<uint32_t> transitMemberOffsets;
     std::vector<Edge> transitEdges;
     std::vector<uint32_t> walkingMemberOffsets;
     std::vector<Edge> walkingEdges;
 
+    // DEBUG: Store edge-to-sequential-index mapping
+    std::vector<uint32_t> edgeToFcIndex;  // edgeToFcIndex[edge.value()] = index in transitEdges
+
     inline bool isWalkingEdge(Edge e) const noexcept {
         return this->get(Function, e).tripCount == 0;
     }
 
-    inline CascadePointer getInitialCascade(uint32_t teIdx, int time) const noexcept {
-        if (teIdx + 1 >= mergedListOffsets.size()) return {UINT32_MAX, 0};
+    inline CascadePointer getInitialCascade(uint32_t seqIdx, int time) const noexcept {
+        if (seqIdx >= fcOffsets.size() - 1) {
+            return {UINT32_MAX, 0};
+        }
 
-        uint32_t start = mergedListOffsets[teIdx];
-        uint32_t end   = mergedListOffsets[teIdx + 1];
-        if (start == end) return {UINT32_MAX, 0};
+        uint32_t start = fcOffsets[seqIdx];
+        uint32_t end = fcOffsets[seqIdx + 1];
+
+        if (start == end) {
+            return {UINT32_MAX, 0};
+        }
 
         const int* begin = flatMergedLists.data() + start;
-        const int* endp  = flatMergedLists.data() + end;
+        const int* endp = flatMergedLists.data() + end;
+
         auto it = std::lower_bound(begin, endp, time);
 
-        if (it == endp) return {UINT32_MAX, 0};
+        if (it == endp) {
+            return {UINT32_MAX, 0};
+        }
 
         uint32_t loc = (uint32_t)(it - begin);
         return flatPointers[start + loc];
     }
 
-    inline CascadePointer getNextCascade(uint32_t prevTeIdx, uint32_t currTeIdx,
+    inline CascadePointer getNextCascade(uint32_t prevSeqIdx, uint32_t currSeqIdx,
                                          const CascadePointer& prevPointer, int t) const noexcept {
-        uint32_t currBase = mergedListOffsets[currTeIdx];
-        uint32_t currEnd = mergedListOffsets[currTeIdx + 1];
+        (void)prevSeqIdx;
 
-        // Python logic: check if time <= previous element in CURRENT list
-        uint32_t adjustedLoc = prevPointer.nextLocIndex;
-        if (adjustedLoc > 0 && adjustedLoc < (currEnd - currBase)) {
-            // Check the element BEFORE nextLocIndex in the CURRENT merged list
-            uint32_t checkIdx = currBase + adjustedLoc - 1;
-            if (checkIdx < flatMergedLists.size() && t <= flatMergedLists[checkIdx]) {
-                adjustedLoc--;
-            }
-        }
-
-        if (currBase + adjustedLoc >= flatPointers.size()) {
+        if (currSeqIdx >= fcOffsets.size() - 1) {
             return {UINT32_MAX, 0};
         }
 
-        return flatPointers[currBase + adjustedLoc];
+        uint32_t currBase = fcOffsets[currSeqIdx];
+        uint32_t currEnd = fcOffsets[currSeqIdx + 1];
+        uint32_t currSize = currEnd - currBase;
+
+        if (currSize == 0) {
+            return {UINT32_MAX, 0};
+        }
+
+        uint32_t next_loc = prevPointer.nextLocIndex;
+
+        uint32_t useIdx;
+        if (next_loc > 0 && next_loc <= currSize) {
+            int valAtPrev = flatMergedLists[currBase + next_loc - 1];
+            if (t <= valAtPrev) {
+                useIdx = next_loc - 1;
+            } else {
+                useIdx = next_loc;
+            }
+        } else if (next_loc == 0) {
+            useIdx = 0;
+        } else {
+            useIdx = next_loc;
+        }
+
+        if (useIdx >= currSize) {
+            return {UINT32_MAX, 0};
+        }
+
+        return flatPointers[currBase + useIdx];
+    }
+
+    // DEBUG FUNCTION: Verify FC data for a specific vertex
+    void debugVertex(Vertex u, int queryTime) const {
+        uint32_t transitStart = transitMemberOffsets[u];
+        uint32_t transitEnd = transitMemberOffsets[u + 1];
+
+        std::cout << "\n=== DEBUG Vertex " << u << " at time " << queryTime << " ===" << std::endl;
+        std::cout << "Transit edges: " << (transitEnd - transitStart) << std::endl;
+
+        for (uint32_t i = transitStart; i < transitEnd && i < transitStart + 3; ++i) {
+            Edge e = transitEdges[i];
+            const auto& h = this->get(Function, e);
+            Vertex v = this->get(ToVertex, e);
+
+            std::cout << "\nEdge " << (i - transitStart) << " (seqIdx=" << i << ", edgeId=" << e.value()
+                      << ") -> v=" << v << ", tripCount=" << h.tripCount << std::endl;
+
+            // Show actual trip departures
+            const DiscreteTrip* trips = this->getTripsBegin(h);
+            std::cout << "  Actual trips (first 5): ";
+            for (uint32_t k = 0; k < std::min(h.tripCount, 5u); ++k) {
+                std::cout << trips[k].departureTime << " ";
+            }
+            std::cout << std::endl;
+
+            // Show FC merged list
+            uint32_t fcStart = fcOffsets[i];
+            uint32_t fcEnd = fcOffsets[i + 1];
+            std::cout << "  FC merged list (first 10 of " << (fcEnd - fcStart) << "): ";
+            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k) {
+                std::cout << flatMergedLists[k] << " ";
+            }
+            std::cout << std::endl;
+
+            // Show FC pointers
+            std::cout << "  FC pointers (first 10): ";
+            for (uint32_t k = fcStart; k < std::min(fcStart + 10, fcEnd); ++k) {
+                std::cout << "(" << flatPointers[k].edgeTripIndex << ","
+                          << flatPointers[k].nextLocIndex << ") ";
+            }
+            std::cout << std::endl;
+
+            // Test getInitialCascade
+            CascadePointer ptr = getInitialCascade(i, queryTime);
+            std::cout << "  getInitialCascade(" << i << ", " << queryTime << ") = ("
+                      << ptr.edgeTripIndex << ", " << ptr.nextLocIndex << ")" << std::endl;
+
+            // What binary search would give
+            auto it = std::lower_bound(trips, trips + h.tripCount, queryTime,
+                [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+            uint32_t bsIdx = (uint32_t)std::distance(trips, it);
+            std::cout << "  Binary search result: " << bsIdx << std::endl;
+
+            // Trace lower_bound on merged list
+            const int* mlBegin = flatMergedLists.data() + fcStart;
+            const int* mlEnd = flatMergedLists.data() + fcEnd;
+            auto mlIt = std::lower_bound(mlBegin, mlEnd, queryTime);
+            uint32_t mlIdx = (uint32_t)(mlIt - mlBegin);
+            std::cout << "  lower_bound on merged list: idx=" << mlIdx;
+            if (mlIt != mlEnd) {
+                std::cout << " (value=" << *mlIt << ")";
+            }
+            std::cout << std::endl;
+        }
     }
 
     inline static TimeDependentGraphFC FromIntermediate(const Intermediate::Data& inter) noexcept {
@@ -629,28 +723,25 @@ public:
         g.transitMemberOffsets.assign(numV + 1, 0);
         g.walkingMemberOffsets.assign(numV + 1, 0);
 
-        uint32_t maxEdgeIdValue = 0;
+        // Find max edge ID
+        uint32_t maxEdgeId = 0;
         for (size_t i = 0; i < numV; ++i) {
             for (Edge e : g.edgesFrom(Vertex(i))) {
-                if (e.value() > maxEdgeIdValue) maxEdgeIdValue = e.value();
+                if (e.value() > maxEdgeId) maxEdgeId = e.value();
             }
         }
-        g.mergedListOffsets.assign(maxEdgeIdValue + 2, 0);
+        g.edgeToFcIndex.assign(maxEdgeId + 1, UINT32_MAX);
 
-        std::cout << "Building Fractional Cascading (matching Python exactly)..." << std::endl;
+        std::cout << "Building Fractional Cascading..." << std::flush;
 
         for (size_t i = 0; i < numV; ++i) {
             Vertex u(i);
             g.transitMemberOffsets[i] = (uint32_t)g.transitEdges.size();
             g.walkingMemberOffsets[i] = (uint32_t)g.walkingEdges.size();
 
-            // Collect edges sorted by trip count (ascending, like Python)
-            // CRITICAL: Python sorts by len(buses), which means edges with walk+bus
-            // are sorted by bus count, but pure walk edges go to walking_nodes
             std::vector<std::pair<Edge, const EdgeTripsHandle*>> edgePairs;
             for (Edge e : g.edgesFrom(u)) {
                 const auto& h = g.get(Function, e);
-                // An edge is "walking only" if tripCount == 0
                 if (h.tripCount == 0) {
                     g.walkingEdges.push_back(e);
                 } else {
@@ -658,7 +749,6 @@ public:
                 }
             }
 
-            // Sort ascending by trip count (Python: key=lambda x: len(x[1].buses))
             std::sort(edgePairs.begin(), edgePairs.end(),
                      [](const auto& a, const auto& b) {
                          return a.second->tripCount < b.second->tripCount;
@@ -670,7 +760,6 @@ public:
             std::vector<std::vector<int>> arr;
             std::vector<Edge> orderedEdges;
 
-            // Build forward (Python builds forward then reverses)
             for (size_t j = 0; j < edgePairs.size(); ++j) {
                 Edge e = edgePairs[j].first;
                 const EdgeTripsHandle* h = edgePairs[j].second;
@@ -678,11 +767,6 @@ public:
 
                 orderedEdges.push_back(e);
 
-                // CRITICAL: Python stores the ORIGINAL departure times (bus.d)
-                // NOT the adjusted times. So we need to extract from allDiscreteTrips
-                // which has already had buffers subtracted during graph construction.
-                // We're using these already-adjusted times for the merged lists,
-                // which is correct since queries will use adjusted times too.
                 std::vector<int> currentArr;
                 currentArr.reserve(h->tripCount);
                 for (size_t k = 0; k < h->tripCount; ++k) {
@@ -691,63 +775,53 @@ public:
                 arr.push_back(currentArr);
 
                 if (j == 0) {
-                    // CRITICAL: Python adds sentinel values [-1] at start and [huge number] at end
                     std::vector<int> withSentinels;
-                    withSentinels.reserve(currentArr.size() + 2);
                     withSentinels.push_back(-1);
                     withSentinels.insert(withSentinels.end(), currentArr.begin(), currentArr.end());
                     withSentinels.push_back(100000000);
                     m_arr.push_back(withSentinels);
                 } else {
-                    // Merge with every other element from previous m_arr
                     std::vector<int> frac;
                     for (size_t k = 1; k < m_arr[j - 1].size(); k += 2) {
                         frac.push_back(m_arr[j - 1][k]);
                     }
 
-                    std::vector<int> merged;
-                    merged.reserve(currentArr.size() + frac.size() + 2);
-                    merged.push_back(-1);  // Sentinel at start
-                    std::merge(currentArr.begin(), currentArr.end(),
-                              frac.begin(), frac.end(),
-                              std::back_inserter(merged));
-                    merged.erase(std::unique(merged.begin() + 1, merged.end()), merged.end());  // Skip sentinel when deduping
-                    merged.push_back(100000000);  // Sentinel at end
-                    m_arr.push_back(merged);
+                    std::vector<int> merged = currentArr;
+                    merged.insert(merged.end(), frac.begin(), frac.end());
+                    std::sort(merged.begin(), merged.end());
+                    merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+
+                    std::vector<int> withSentinels;
+                    withSentinels.push_back(-1);
+                    withSentinels.insert(withSentinels.end(), merged.begin(), merged.end());
+                    withSentinels.push_back(100000000);
+                    m_arr.push_back(withSentinels);
                 }
             }
 
-            // Reverse everything (Python does this)
+            // REVERSE
             std::reverse(m_arr.begin(), m_arr.end());
             std::reverse(arr.begin(), arr.end());
             std::reverse(orderedEdges.begin(), orderedEdges.end());
 
-            // Build pointers
             for (size_t j = 0; j < orderedEdges.size(); ++j) {
                 Edge e = orderedEdges[j];
+                uint32_t seqIdx = (uint32_t)g.transitEdges.size();
                 g.transitEdges.push_back(e);
-                g.mergedListOffsets[e.value()] = (uint32_t)g.flatMergedLists.size();
+                g.edgeToFcIndex[e.value()] = seqIdx;
+                g.fcOffsets.push_back((uint32_t)g.flatMergedLists.size());
 
-                // CRITICAL: m_arr[j] has sentinels [-1, ..., 100000000]
-                // We need to skip the sentinels when storing and when computing pointers
-                for (size_t idx = 1; idx < m_arr[j].size() - 1; ++idx) {  // Skip first and last (sentinels)
+                for (size_t idx = 0; idx < m_arr[j].size(); ++idx) {
                     int val = m_arr[j][idx];
                     g.flatMergedLists.push_back(val);
 
-                    // Python: bisect_left(arr[i], m_arr[i][j])
-                    // Find where this time value would go in the ORIGINAL edge's trip list (no sentinels)
                     auto it = std::lower_bound(arr[j].begin(), arr[j].end(), val);
                     uint32_t edgeTripIdx = (uint32_t)std::distance(arr[j].begin(), it);
 
-                    // Python: bisect_left(m_arr[i + 1], m_arr[i][j])
-                    // Find where this time value would go in the NEXT merged list
                     uint32_t nextLocIdx = 0;
                     if (j + 1 < m_arr.size()) {
-                        // m_arr[j+1] also has sentinels, so search in the full array
                         auto itNext = std::lower_bound(m_arr[j + 1].begin(), m_arr[j + 1].end(), val);
-                        // But subtract 1 because the first element is the -1 sentinel
-                        uint32_t rawIdx = (uint32_t)std::distance(m_arr[j + 1].begin(), itNext);
-                        nextLocIdx = (rawIdx > 0) ? (rawIdx - 1) : 0;
+                        nextLocIdx = (uint32_t)std::distance(m_arr[j + 1].begin(), itNext);
                     }
 
                     g.flatPointers.push_back({edgeTripIdx, nextLocIdx});
@@ -757,9 +831,37 @@ public:
 
         g.transitMemberOffsets[numV] = (uint32_t)g.transitEdges.size();
         g.walkingMemberOffsets[numV] = (uint32_t)g.walkingEdges.size();
-        g.mergedListOffsets[maxEdgeIdValue + 1] = (uint32_t)g.flatMergedLists.size();
+        g.fcOffsets.push_back((uint32_t)g.flatMergedLists.size());
 
         std::cout << " done." << std::endl;
+        std::cout << "  Transit edges: " << g.transitEdges.size() << std::endl;
+        std::cout << "  Walking edges: " << g.walkingEdges.size() << std::endl;
+        std::cout << "  FC data elements: " << g.flatMergedLists.size() << std::endl;
+
+        return g;
+    }
+
+    inline void serialize(const std::string& fileName) const noexcept {
+        TimeDependentGraph::serialize(fileName);
+        IO::serialize(fileName + ".fc",
+            flatMergedLists, flatPointers, fcOffsets,
+            transitMemberOffsets, transitEdges,
+            walkingMemberOffsets, walkingEdges,
+            edgeToFcIndex);
+    }
+
+    inline void deserialize(const std::string& fileName) noexcept {
+        TimeDependentGraph::deserialize(fileName);
+        IO::deserialize(fileName + ".fc",
+            flatMergedLists, flatPointers, fcOffsets,
+            transitMemberOffsets, transitEdges,
+            walkingMemberOffsets, walkingEdges,
+            edgeToFcIndex);
+    }
+
+    inline static TimeDependentGraphFC FromBinary(const std::string& fileName) noexcept {
+        TimeDependentGraphFC g;
+        g.deserialize(fileName);
         return g;
     }
 };
