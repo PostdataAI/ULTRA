@@ -216,7 +216,7 @@ public:
 
     // [NEW FEATURE] Dominated connection filtering (ATF cut operation)
     // Removes connections that are strictly dominated by other connections.
-    // A connection (d1, a1) dominates (d2, a2) if d1 < d2 and a1 <= a2
+    // A connection (d1, a1) dominates (d2, a2) if d1 <= d2 and a1 < a2
     //
     // [USAGE] Called during graph construction to reduce the number of connections
     // that need to be stored and evaluated during queries.
@@ -248,22 +248,23 @@ public:
             }
 
             // Check domination against the last kept connection
+            // Python logic: if result is not empty and currentTrip.arrival > lastTrip.arrival, check departure
+            // If departure is later, add current. Otherwise (same or earlier departure but worse arrival), pop last or skip
             while (!result.empty()) {
                 const auto& lastTrip = result.back();
 
-                // Current trip must have later or equal departure (already sorted)
-                // Check if current trip arrives earlier than last kept trip
-                if (currentTrip.arrivalTime <= lastTrip.arrivalTime) {
+                // If current arrives STRICTLY earlier, it dominates last (same or later departure, earlier arrival)
+                if (currentTrip.arrivalTime < lastTrip.arrivalTime) {
                     // Current dominates last - remove last
                     result.pop_back();
                 } else {
-                    // Check if we should add current trip
-                    // Only add if departure is strictly later (no domination)
+                    // Current arrives later or same as last
+                    // Only keep current if it departs strictly later
                     if (lastTrip.departureTime < currentTrip.departureTime) {
-                        // No domination, add current trip
+                        // Different departure times, both should be kept
                         break;
                     } else {
-                        // Same departure time but worse arrival - skip current
+                        // Same departure time (or current is earlier?) but worse/same arrival - skip current
                         goto skip_current;
                     }
                 }
