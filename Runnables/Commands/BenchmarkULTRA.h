@@ -1238,16 +1238,25 @@ public:
     CompareTDGraphVariants(BasicShell& shell) :
         ParameterizedCommand(shell, "compareTDGraphVariants",
             "Compares TimeDependentDijkstraStateful performance on TimeDependentGraph vs TimeDependentGraphClassic (with dominated edge filtering).") {
-        addParameter("Intermediate input file");
+        addParameter("Intermediate binary file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
     }
 
     virtual void execute() noexcept {
+        // --- Load Intermediate data ---
+        std::cout << "\n=== Loading Intermediate data ===" << std::endl;
+
+        // Try to load intermediate data
+        Intermediate::Data intermediateData;
+
+        intermediateData.deserialize(getParameter("Intermediate binary file"));
+
+        std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+
         // --- Build both graph variants ---
         std::cout << "\n=== Building TimeDependentGraph (Standard) ===" << std::endl;
-        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
-
         Timer buildTimer;
         TimeDependentGraph graphStandard = TimeDependentGraph::FromIntermediate(intermediateData);
         double buildTimeStandard = buildTimer.elapsedMilliseconds();
@@ -1305,7 +1314,7 @@ public:
         // --- Run TD-Dijkstra on Classic Graph with Filtering ---
         std::cout << "\n=== Running TD-Dijkstra on TimeDependentGraphClassic (Filtered) ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TDD::AggregateProfiler, false, true>;
+        using TDDijkstraClassic = TimeDependentDijkstraStateful<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
 
         Timer classicTimer;
@@ -1391,8 +1400,7 @@ public:
         std::cout << "  Vertices: " << graphStandard.numVertices() << " (both)" << std::endl;
         std::cout << "  Edges: " << graphStandard.numEdges() << " (both)" << std::endl;
 
-        // Get trip counts from the profiler statistics if available
-        // Or we can compare the allDiscreteTrips vector sizes
+        // Get trip counts from the allDiscreteTrips vector sizes
         size_t standardTripCount = graphStandard.allDiscreteTrips.size();
         size_t classicTripCount = graphClassic.allDiscreteTrips.size();
 
@@ -1403,7 +1411,7 @@ public:
             double reduction = 100.0 * (1.0 - (double)classicTripCount / standardTripCount);
             std::cout << "  → Reduction: " << reduction << "%" << std::endl;
 
-            size_t memorySaved = (standardTripCount - classicTripCount) * sizeof(DiscreteTripClassic);
+            size_t memorySaved = (standardTripCount - classicTripCount) * sizeof(DiscreteTrip);
             std::cout << "  → Memory saved: ~" << (memorySaved / 1024.0 / 1024.0) << " MB" << std::endl;
         }
 

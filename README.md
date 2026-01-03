@@ -174,7 +174,20 @@ colima ssh
 sudo apt-get update
 sudo apt-get install cmake build-essential
 sudo apt-get install libnuma-dev
-cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --target All --config Release
+
+# 1. Install ccache
+sudo apt-get update && sudo apt-get install -y ccache
+
+# 2. Tell CMake to use it
+rm -rf cmake-build-release
+cmake -B cmake-build-release \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+
+# 3. Build (use -j to combine caching with multi-core power)
+cmake --build cmake-build-release -j
+
 ```
 
 ```
