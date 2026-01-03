@@ -29,6 +29,7 @@
 // --- CONSTRUCTOR DEPENDENCIES ---
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
+#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"  // For filterDominatedConnections
 
 using TransferGraph = ::TransferGraph;
 
@@ -118,6 +119,10 @@ private:
 
     // [FRACTIONAL CASCADING] Per-vertex cascading structures
     std::vector<FractionalCascadingData> fcData;
+
+    // [OPTIMIZATION] Edge lookup map for O(1) access during FC relaxation
+    // Maps (u, v) -> Edge to avoid iterating through adjacency list
+    std::unordered_map<std::pair<Vertex, Vertex>, Edge, VertexPairHash> edgeMap;
 
 public:
     TimeDependentGraphFC() = default;
@@ -283,12 +288,15 @@ public:
             }
         }
 
-        // 5. GRAPH COMPILATION (standard version - no filtering yet)
-        std::cout << "Creating time-dependent edges..." << std::flush;
+        // 5. GRAPH COMPILATION WITH DOMINATED CONNECTION FILTERING
+        std::cout << "Creating time-dependent edges with domination filtering..." << std::flush;
         size_t edgeCount = 0;
 
         tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5);
         tdGraph.allSuffixMinArrivals.reserve(tripSegments.size() * 5);
+
+        size_t totalTripsBeforeFilter = 0;
+        size_t totalTripsAfterFilter = 0;
 
         for (auto& pair : tripSegments) {
             const Vertex u = pair.first.first;
@@ -303,29 +311,50 @@ public:
 
             std::sort(trips.begin(), trips.end());
 
+            totalTripsBeforeFilter += trips.size();
+
+            // Apply dominated connection filtering (same as Classic)
+            std::vector<DiscreteTrip> filteredTrips = TimeDependentGraphClassic::filterDominatedConnections(trips, walkTime);
+
+            totalTripsAfterFilter += filteredTrips.size();
+
+            if (filteredTrips.empty() && walkTime == never) {
+                continue;
+            }
+
             uint32_t firstTripIdx = tdGraph.allDiscreteTrips.size();
             uint32_t firstSuffixIdx = tdGraph.allSuffixMinArrivals.size();
 
-            tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(), trips.begin(), trips.end());
+            tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(), filteredTrips.begin(), filteredTrips.end());
 
             size_t startSize = tdGraph.allSuffixMinArrivals.size();
-            tdGraph.allSuffixMinArrivals.resize(startSize + trips.size());
-            if (!trips.empty()) {
-                tdGraph.allSuffixMinArrivals.back() = trips.back().arrivalTime;
-                for (int i = int(trips.size()) - 2; i >= 0; --i) {
+            tdGraph.allSuffixMinArrivals.resize(startSize + filteredTrips.size());
+            if (!filteredTrips.empty()) {
+                tdGraph.allSuffixMinArrivals.back() = filteredTrips.back().arrivalTime;
+                for (int i = int(filteredTrips.size()) - 2; i >= 0; --i) {
                     tdGraph.allSuffixMinArrivals[startSize + i] =
-                        std::min(trips[i].arrivalTime, tdGraph.allSuffixMinArrivals[startSize + i + 1]);
+                        std::min(filteredTrips[i].arrivalTime, tdGraph.allSuffixMinArrivals[startSize + i + 1]);
                 }
             }
 
             EdgeTripsHandle handle;
             handle.firstTripIndex = firstTripIdx;
-            handle.tripCount = (uint32_t)trips.size();
+            handle.tripCount = (uint32_t)filteredTrips.size();
             handle.firstSuffixIndex = firstSuffixIdx;
             handle.walkTime = walkTime;
 
             tdGraph.addTimeDependentEdge(u, v, handle);
             edgeCount++;
+        }
+
+        std::cout << " done (" << edgeCount << " edges created)" << std::endl;
+
+        // Print filtering statistics
+        if (totalTripsBeforeFilter > 0) {
+            double reductionPercent = 100.0 * (1.0 - (double)totalTripsAfterFilter / totalTripsBeforeFilter);
+            std::cout << "Domination filtering: " << totalTripsBeforeFilter
+                      << " -> " << totalTripsAfterFilter << " trips ("
+                      << reductionPercent << "% reduction)" << std::endl;
         }
 
         // 6. PURE WALKING EDGES
@@ -485,6 +514,20 @@ private:
     }
 
 public:
+    // [FRACTIONAL CASCADING] Get edge from u to v in O(1)
+    inline Edge getEdge(Vertex u, Vertex v) const noexcept {
+        auto it = edgeMap.find({u, v});
+        if (it != edgeMap.end()) {
+            return it->second;
+        }
+        return noEdge;  // Edge not found
+    }
+
+    // [FRACTIONAL CASCADING] Check if edge exists
+    inline bool hasEdge(Vertex u, Vertex v) const noexcept {
+        return edgeMap.find({u, v}) != edgeMap.end();
+    }
+
     inline size_t numVertices() const noexcept {
         return graph.numVertices();
     }
@@ -547,6 +590,11 @@ public:
     inline typename UnderlyingGraph::EdgeHandle addTimeDependentEdge(const Vertex from, const Vertex to, const EdgeTripsHandle& func) {
         typename UnderlyingGraph::EdgeHandle handle = graph.addEdge(from, to);
         handle.set(Function, func);
+
+        // Add to edge map for O(1) lookup
+        Edge edgeId = handle;
+        edgeMap[{from, to}] = edgeId;
+
         return handle;
     }
 
