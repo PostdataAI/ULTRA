@@ -53,8 +53,7 @@ public:
         , relaxCount(0)
         , targetVertex(noVertex)
         , fcSearchCount(0)
-        , regularSearchCount(0)
-        , fcMismatchCount(0) {
+        , regularSearchCount(0) {
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
             }
@@ -152,7 +151,6 @@ public:
     inline void printFCStatistics() const noexcept {
         std::cout << "FC searches: " << fcSearchCount << std::endl;
         std::cout << "Regular searches: " << regularSearchCount << std::endl;
-        std::cout << "FC mismatches: " << fcMismatchCount << std::endl;
         if (fcSearchCount + regularSearchCount > 0) {
             double fcPercent = 100.0 * fcSearchCount / (fcSearchCount + regularSearchCount);
             std::cout << "FC usage: " << fcPercent << "%" << std::endl;
@@ -204,7 +202,7 @@ private:
                 }
             }
 
-            // 2. [FRACTIONAL CASCADING] Scan edges using FC if available
+            // 2. Scan edges - use FC if available
             if (graph.hasFCData(u)) {
                 relaxEdgesWithFC(u, t);
             } else {
@@ -214,26 +212,67 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
-    // Use stored Edge IDs and standard binary search for correctness testing
+    // [FRACTIONAL CASCADING] Optimized edge relaxation
+    // Based on Python: get_positions_fractional_cascading + Dijkstra loop
     inline void relaxEdgesWithFC(const Vertex u, const int departureTime) noexcept {
         fcSearchCount++;
 
         const FractionalCascadingData& fc = graph.getFCData(u);
 
-        if (fc.reachableEdges.empty()) return;
+        if (fc.m_arr.empty() || fc.reachableEdges.empty()) return;
 
-        // Process all reachable edges using standard binary search
-        for (size_t i = 0; i < fc.reachableEdges.size(); ++i) {
-            const Edge e = fc.reachableEdges[i];
-            const Vertex v = fc.reachableNodes[i];
+        const size_t numLevels = fc.m_arr.size();
 
-            const int arrivalAtV = graph.getArrivalTime(e, departureTime);
-            if (arrivalAtV < never) {
-                relaxEdge(v, u, arrivalAtV);
+        // ONE binary search on the first cascaded array
+        int loc = fc.bisectLeft(departureTime);
+
+        // Bounds check for first level
+        if (loc >= (int)fc.pointers[0].size()) {
+            loc = (int)fc.pointers[0].size() - 1;
+        }
+        if (loc < 0) loc = 0;
+
+        // Get pointer for level 0
+        const FCPointer& ptr0 = fc.pointers[0][loc];
+
+        // Relax edge at level 0
+        relaxEdgeWithStartIndex(fc.reachableEdges[0], fc.reachableNodes[0], u, departureTime, ptr0.startIndex);
+
+        int nextLoc = ptr0.nextLoc;
+
+        // Cascade through remaining levels - O(1) per level
+        for (size_t i = 1; i < numLevels; ++i) {
+            // Bounds check
+            if (nextLoc >= (int)fc.m_arr[i].size()) {
+                nextLoc = (int)fc.m_arr[i].size() - 1;
             }
+            if (nextLoc < 0) nextLoc = 0;
+
+            // Python logic: choose pointer based on comparison
+            // if winner_weight <= m_arr[i][next_loc - 1]: use next_loc - 1
+            // else: use next_loc
+            int ptrIndex;
+            if (nextLoc > 0 && departureTime <= fc.m_arr[i][nextLoc - 1]) {
+                ptrIndex = nextLoc - 1;
+            } else {
+                ptrIndex = nextLoc;
+            }
+
+            // Bounds check for pointer index
+            if (ptrIndex >= (int)fc.pointers[i].size()) {
+                ptrIndex = (int)fc.pointers[i].size() - 1;
+            }
+            if (ptrIndex < 0) ptrIndex = 0;
+
+            const FCPointer& ptr_i = fc.pointers[i][ptrIndex];
+
+            // Relax edge at level i
+            relaxEdgeWithStartIndex(fc.reachableEdges[i], fc.reachableNodes[i], u, departureTime, ptr_i.startIndex);
+
+            nextLoc = ptr_i.nextLoc;
         }
 
-        // Process walking-only edges
+        // Process walking-only edges (no FC needed, just walk time)
         for (size_t i = 0; i < fc.walkingEdges.size(); ++i) {
             const Edge e = fc.walkingEdges[i];
             const Vertex v = fc.walkingNodes[i];
@@ -245,6 +284,32 @@ private:
         }
     }
 
+    // Relax edge using the pre-computed startIndex from FC
+    // startIndex points directly into the edge's trip array
+    inline void relaxEdgeWithStartIndex(const Edge e, const Vertex v, const Vertex parent,
+                                         const int departureTime, const int startIndex) noexcept {
+        const EdgeTripsHandle& h = graph.get(Function, e);
+
+        int bestArrival = never;
+
+        // Use suffix minimum for O(1) best arrival lookup
+        if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
+            const int* suffixMin = graph.getSuffixMinBegin(h);
+            bestArrival = suffixMin[startIndex];
+        }
+
+        // Check walking option
+        if (h.walkTime != never) {
+            int walkArrival = departureTime + h.walkTime;
+            bestArrival = std::min(bestArrival, walkArrival);
+        }
+
+        if (bestArrival < never) {
+            relaxEdge(v, parent, bestArrival);
+        }
+    }
+
+    // Standard edge relaxation (when no FC data available)
     inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
         regularSearchCount++;
 
@@ -293,5 +358,4 @@ private:
 
     size_t fcSearchCount;
     size_t regularSearchCount;
-    mutable size_t fcMismatchCount;
 };
