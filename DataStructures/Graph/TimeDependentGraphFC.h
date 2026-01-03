@@ -395,10 +395,11 @@ public:
 private:
     // [FRACTIONAL CASCADING] Build cascaded structure for a single vertex
     // Based on Python: fractional_cascading_precomputation()
+    // IMPORTANT: Builds on the FILTERED trip data (after dominated connection removal)
     inline void buildFractionalCascadingForVertex(Vertex u) noexcept {
         FractionalCascadingData& fc = fcData[u];
 
-        // Collect all outgoing edges with their departure times
+        // Collect all outgoing edges with their departure times (FROM FILTERED DATA)
         struct EdgeInfo {
             Vertex target;
             std::vector<int> departureTimes;
@@ -416,7 +417,7 @@ private:
                 info.target = v;
                 info.tripCount = h.tripCount;
 
-                // Extract departure times
+                // Extract departure times FROM THE FILTERED TRIPS
                 const DiscreteTrip* begin = getTripsBegin(h);
                 const DiscreteTrip* end = getTripsEnd(h);
                 for (const DiscreteTrip* it = begin; it != end; ++it) {
