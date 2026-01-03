@@ -15,14 +15,6 @@
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-// Time-dependent Dijkstra with Fractional Cascading optimization
-//
-// OPTIMIZATION: Uses fractional cascading to avoid multiple binary searches
-// when relaxing edges from the same vertex. Instead of O(k log n) searches
-// for k outgoing edges, we do O(log n + k) using the cascaded structure.
-//
-// Based on Python implementation in time_table_nodes == 'fc' branch
-
 template<typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TimeDependentDijkstraStatefulFC {
 public:
@@ -31,7 +23,6 @@ public:
     static constexpr bool Debug = DEBUG;
     using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
 
-    // --- NODE LABEL (simpler version for FC) ---
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex) {}
@@ -62,7 +53,8 @@ public:
         , relaxCount(0)
         , targetVertex(noVertex)
         , fcSearchCount(0)
-        , regularSearchCount(0) {
+        , regularSearchCount(0)
+        , fcMismatchCount(0) {
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
             }
@@ -160,6 +152,7 @@ public:
     inline void printFCStatistics() const noexcept {
         std::cout << "FC searches: " << fcSearchCount << std::endl;
         std::cout << "Regular searches: " << regularSearchCount << std::endl;
+        std::cout << "FC mismatches: " << fcMismatchCount << std::endl;
         if (fcSearchCount + regularSearchCount > 0) {
             double fcPercent = 100.0 * fcSearchCount / (fcSearchCount + regularSearchCount);
             std::cout << "FC usage: " << fcPercent << "%" << std::endl;
@@ -221,67 +214,37 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
-    // [FRACTIONAL CASCADING] Relax edges using the cascaded structure
-    // Based on Python: time_table_nodes == 'fc' branch
+    // Use stored Edge IDs and standard binary search for correctness testing
     inline void relaxEdgesWithFC(const Vertex u, const int departureTime) noexcept {
         fcSearchCount++;
 
         const FractionalCascadingData& fc = graph.getFCData(u);
 
-        if (fc.m_arr.empty()) return;
+        if (fc.reachableEdges.empty()) return;
 
-        // Get the first-level search position
-        int loc = fc.bisectLeft(departureTime);
+        // Process all reachable edges using standard binary search
+        for (size_t i = 0; i < fc.reachableEdges.size(); ++i) {
+            const Edge e = fc.reachableEdges[i];
+            const Vertex v = fc.reachableNodes[i];
 
-        if (loc >= (int)fc.m_arr[0].size()) {
-            loc = fc.m_arr[0].size() - 1;
-        }
-
-        // Process first reachable node
-        if (!fc.reachableNodes.empty() && loc < (int)fc.pointers[0].size()) {
-            const FCPointer& ptr = fc.pointers[0][loc];
-            const Vertex targetNode = fc.reachableNodes[0];
-
-            relaxEdgeWithStartIndex(u, targetNode, departureTime, ptr.startIndex);
-
-            int nextLoc = ptr.nextLoc;
-
-            // Cascade through remaining levels
-            for (size_t i = 1; i < fc.m_arr.size(); ++i) {
-                if (nextLoc >= (int)fc.m_arr[i].size()) {
-                    nextLoc = fc.m_arr[i].size() - 1;
-                }
-
-                // Check which pointer to use based on comparison
-                if (nextLoc > 0 && departureTime <= fc.m_arr[i][nextLoc - 1]) {
-                    nextLoc = nextLoc - 1;
-                }
-
-                if (nextLoc < (int)fc.pointers[i].size()) {
-                    const FCPointer& ptr_i = fc.pointers[i][nextLoc];
-                    const Vertex targetNode_i = fc.reachableNodes[i];
-
-                    relaxEdgeWithStartIndex(u, targetNode_i, departureTime, ptr_i.startIndex);
-
-                    nextLoc = ptr_i.nextLoc;
-                }
+            const int arrivalAtV = graph.getArrivalTime(e, departureTime);
+            if (arrivalAtV < never) {
+                relaxEdge(v, u, arrivalAtV);
             }
         }
 
-        // Process walking-only nodes
-        for (const Vertex walkNode : fc.walkingNodes) {
-            // O(1) edge lookup
-            const Edge e = graph.getEdge(u, walkNode);
-            if (e != noEdge) {
-                const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
-                if (arrivalAtV < never) {
-                    relaxEdge(walkNode, u, arrivalAtV);
-                }
+        // Process walking-only edges
+        for (size_t i = 0; i < fc.walkingEdges.size(); ++i) {
+            const Edge e = fc.walkingEdges[i];
+            const Vertex v = fc.walkingNodes[i];
+
+            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
+            if (arrivalAtV < never) {
+                relaxEdge(v, u, arrivalAtV);
             }
         }
     }
 
-    // Relax edges the standard way (when no FC data available)
     inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
         regularSearchCount++;
 
@@ -292,43 +255,6 @@ private:
             if (arrivalAtV < never) {
                 relaxEdge(v, u, arrivalAtV);
             }
-        }
-    }
-
-    // Relax a specific edge using the pre-computed start index from FC
-    // NO binary search - the FC structure has already done the work!
-    inline void relaxEdgeWithStartIndex(const Vertex u, const Vertex v, const int departureTime, const int startIndex) noexcept {
-        // O(1) edge lookup using the edge map
-        const Edge e = graph.getEdge(u, v);
-        if (e == noEdge) return;
-
-        const EdgeTripsHandle& h = graph.get(Function, e);
-
-        int bestArrival = never;
-
-        // Python: if start_index < f.size: l = f.buses[start_index].a
-        // Use startIndex DIRECTLY - no search needed!
-        if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
-            // Get the trip at this index
-            const DiscreteTrip* trips = graph.getTripsBegin(h);
-            const DiscreteTrip& trip = trips[startIndex];
-
-            // Verify this trip is valid (departs at or after departureTime)
-            if (trip.departureTime >= departureTime) {
-                // Use suffix minima for best arrival from this index onward
-                const int* suffixMin = graph.getSuffixMinBegin(h);
-                bestArrival = suffixMin[startIndex];
-            }
-        }
-
-        // Check walking option
-        if (h.walkTime != never) {
-            int walkArrival = departureTime + h.walkTime;
-            bestArrival = std::min(bestArrival, walkArrival);
-        }
-
-        if (bestArrival < never) {
-            relaxEdge(v, u, bestArrival);
         }
     }
 
@@ -365,7 +291,7 @@ private:
     Vertex targetVertex;
     Profiler profiler;
 
-    // FC statistics
     size_t fcSearchCount;
     size_t regularSearchCount;
+    mutable size_t fcMismatchCount;
 };

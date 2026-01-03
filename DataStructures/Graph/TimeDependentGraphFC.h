@@ -1,16 +1,5 @@
 #pragma once
 
-// ============================================================================
-// TimeDependentGraphFC - Fractional Cascading Optimization
-// ============================================================================
-// This graph variant implements fractional cascading to speed up binary search
-// across multiple edges from the same vertex. Instead of doing separate binary
-// searches on each outgoing edge, we build a cascaded structure that allows
-// jumping between sorted lists efficiently.
-//
-// Based on the Python implementation in graph.fractional_cascading_precomputation()
-// ============================================================================
-
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
@@ -19,64 +8,39 @@
 #include <unordered_map>
 #include <iostream>
 
-// --- CORE INCLUDES ---
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Meta.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
 #include "../../DataStructures/Graph/Classes/DynamicGraph.h"
 #include "../../Helpers/IO/Serialization.h"
 
-// --- CONSTRUCTOR DEPENDENCIES ---
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
-#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"  // For filterDominatedConnections
+#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"
 
 using TransferGraph = ::TransferGraph;
 
-// =========================================================================
-// Fractional Cascading Data Structures
-// =========================================================================
-
-// Pointer structure for fractional cascading
-// [start_index, next_loc] where:
-// - start_index: index in the original array (arr[i])
-// - next_loc: location in the next cascaded array (m_arr[i+1])
 struct FCPointer {
     int startIndex;
     int nextLoc;
 };
 
-// Per-vertex fractional cascading structure
 struct FractionalCascadingData {
-    // m_arr[i] = cascaded sorted departure times for level i
-    // Each level includes its own departure times plus every other element from level i-1
     std::vector<std::vector<int>> m_arr;
-
-    // arr[i] = original departure times for edge to reachable_nodes[i]
     std::vector<std::vector<int>> arr;
-
-    // pointers[i][j] = {startIndex, nextLoc} for position j in m_arr[i]
     std::vector<std::vector<FCPointer>> pointers;
-
-    // reachable_nodes[i] = the target vertex for level i (nodes with transit connections)
     std::vector<Vertex> reachableNodes;
-
-    // walking_nodes = vertices reachable only by walking (no transit)
+    std::vector<Edge> reachableEdges;  // NEW: Store Edge IDs directly
     std::vector<Vertex> walkingNodes;
+    std::vector<Edge> walkingEdges;    // NEW: Store Edge IDs for walking
 
-    // Helper: given a departure time, returns the index in m_arr[0]
     inline int bisectLeft(int departureTime) const noexcept {
         if (m_arr.empty() || m_arr[0].empty()) return 0;
-
         const auto& firstLevel = m_arr[0];
         auto it = std::lower_bound(firstLevel.begin(), firstLevel.end(), departureTime);
         return std::distance(firstLevel.begin(), it);
     }
 };
-
-// =========================================================================
-// TimeDependentGraphFC Class
-// =========================================================================
 
 class TimeDependentGraphFC {
 public:
@@ -109,25 +73,17 @@ public:
         Vertex stopId;
     };
 
-    // Standard graph data
     std::vector<DiscreteTrip> allDiscreteTrips;
     std::vector<int> allSuffixMinArrivals;
 
 private:
     std::vector<uint32_t> tripOffsets;
     std::vector<TripLeg> allTripLegs;
-
-    // [FRACTIONAL CASCADING] Per-vertex cascading structures
     std::vector<FractionalCascadingData> fcData;
-
-    // [OPTIMIZATION] Edge lookup map for O(1) access during FC relaxation
-    // Maps (u, v) -> Edge to avoid iterating through adjacency list
-    std::unordered_map<std::pair<Vertex, Vertex>, Edge, VertexPairHash> edgeMap;
 
 public:
     TimeDependentGraphFC() = default;
 
-    // Standard graph interface methods
     inline bool getNextStop(const int tripId, const uint16_t currentStopIndex, Vertex& outStop, int& outArrival) const noexcept {
         if (tripId < 0 || (size_t)tripId + 1 >= tripOffsets.size()) return false;
         const uint32_t currentTripStart = tripOffsets[tripId];
@@ -190,25 +146,21 @@ public:
         return {-1};
     }
 
-    // [FRACTIONAL CASCADING] Get the FC data for a vertex
     inline const FractionalCascadingData& getFCData(Vertex u) const noexcept {
         static const FractionalCascadingData emptyData;
         if (u >= fcData.size()) return emptyData;
         return fcData[u];
     }
 
-    // [FRACTIONAL CASCADING] Check if vertex has FC data
     inline bool hasFCData(Vertex u) const noexcept {
         return u < fcData.size() && !fcData[u].m_arr.empty();
     }
 
-    // [FACTORY] Build graph from Intermediate data
     inline static TimeDependentGraphFC FromIntermediate(const Intermediate::Data& inter) noexcept {
         TimeDependentGraphFC tdGraph;
         const size_t numStops = inter.numberOfStops();
         const size_t numVertices = inter.transferGraph.numVertices();
 
-        // 1. TOPOLOGY SETUP
         for (size_t i = 0; i < numVertices; ++i) {
             tdGraph.graph.addVertex();
         }
@@ -218,7 +170,6 @@ public:
             tdGraph.minTransferTimeByVertex[s] = inter.stops[s].minTransferTime;
         }
 
-        // 2. ROUTE DECOMPOSITION INTO EDGES
         std::unordered_map<std::pair<Vertex, Vertex>, std::vector<DiscreteTrip>, VertexPairHash> tripSegments;
         tripSegments.reserve(inter.trips.size() * 10);
 
@@ -244,7 +195,6 @@ public:
         }
         std::cout << " done." << std::endl;
 
-        // 3. FLATTEN TRIP LEGS
         tdGraph.tripOffsets.reserve(inter.trips.size() + 1);
 
         size_t totalStops = 0;
@@ -268,7 +218,6 @@ public:
             }
         }
 
-        // 4. TRANSFER GRAPH PROCESSING
         std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
         minTransferTimes.reserve(inter.transferGraph.numEdges());
 
@@ -288,7 +237,6 @@ public:
             }
         }
 
-        // 5. GRAPH COMPILATION WITH DOMINATED CONNECTION FILTERING
         std::cout << "Creating time-dependent edges with domination filtering..." << std::flush;
         size_t edgeCount = 0;
 
@@ -313,7 +261,6 @@ public:
 
             totalTripsBeforeFilter += trips.size();
 
-            // Apply dominated connection filtering (same as Classic)
             std::vector<DiscreteTrip> filteredTrips = TimeDependentGraphClassic::filterDominatedConnections(trips, walkTime);
 
             totalTripsAfterFilter += filteredTrips.size();
@@ -349,7 +296,6 @@ public:
 
         std::cout << " done (" << edgeCount << " edges created)" << std::endl;
 
-        // Print filtering statistics
         if (totalTripsBeforeFilter > 0) {
             double reductionPercent = 100.0 * (1.0 - (double)totalTripsAfterFilter / totalTripsBeforeFilter);
             std::cout << "Domination filtering: " << totalTripsBeforeFilter
@@ -357,7 +303,6 @@ public:
                       << reductionPercent << "% reduction)" << std::endl;
         }
 
-        // 6. PURE WALKING EDGES
         for (const auto& pair : minTransferTimes) {
             const Vertex u = pair.first.first;
             const Vertex v = pair.first.second;
@@ -375,15 +320,18 @@ public:
 
         std::cout << " done (" << edgeCount << " edges created)" << std::endl;
 
-        // 7. [NEW] BUILD FRACTIONAL CASCADING STRUCTURES
         std::cout << "Building fractional cascading structures..." << std::flush;
         tdGraph.buildFractionalCascading();
+        std::cout << " done." << std::endl;
+
+        // VERIFY FC STRUCTURE
+        std::cout << "Verifying fractional cascading structures..." << std::flush;
+        tdGraph.verifyFCStructure();
         std::cout << " done." << std::endl;
 
         return tdGraph;
     }
 
-    // [FRACTIONAL CASCADING] Build the cascaded structures for all vertices
     inline void buildFractionalCascading() noexcept {
         fcData.resize(graph.numVertices());
 
@@ -392,16 +340,83 @@ public:
         }
     }
 
+    // VERIFICATION: Check that FC structure matches actual edge data
+    inline void verifyFCStructure() const noexcept {
+        size_t errorCount = 0;
+        size_t checkedVertices = 0;
+
+        for (size_t u = 0; u < fcData.size(); ++u) {
+            const FractionalCascadingData& fc = fcData[u];
+            if (fc.reachableNodes.empty()) continue;
+
+            checkedVertices++;
+
+            // Verify each reachable node using stored Edge ID
+            for (size_t level = 0; level < fc.reachableNodes.size(); ++level) {
+                const Vertex v = fc.reachableNodes[level];
+                const Edge e = fc.reachableEdges[level];  // Use stored Edge ID
+
+                if (e == noEdge) {
+                    if (errorCount < 10) {
+                        std::cout << "\n[FC VERIFY ERROR] Vertex " << u << " level " << level
+                                  << ": reachableNode " << v << " has no edge!" << std::endl;
+                    }
+                    errorCount++;
+                    continue;
+                }
+
+                const EdgeTripsHandle& h = graph.get(Function, e);
+
+                // Check that arr[level] matches the edge's trips
+                if (fc.arr[level].size() != h.tripCount) {
+                    if (errorCount < 10) {
+                        std::cout << "\n[FC VERIFY ERROR] Vertex " << u << " -> " << v << " (level " << level << ")"
+                                  << ": arr size=" << fc.arr[level].size()
+                                  << " but edge tripCount=" << h.tripCount << std::endl;
+
+                        std::cout << "  arr[" << level << "]: ";
+                        for (size_t k = 0; k < std::min(fc.arr[level].size(), (size_t)5); ++k) {
+                            std::cout << fc.arr[level][k] << " ";
+                        }
+                        std::cout << std::endl;
+
+                        std::cout << "  edge trips: ";
+                        const DiscreteTrip* trips = getTripsBegin(h);
+                        for (size_t k = 0; k < std::min((size_t)h.tripCount, (size_t)5); ++k) {
+                            std::cout << trips[k].departureTime << " ";
+                        }
+                        std::cout << std::endl;
+                    }
+                    errorCount++;
+                    continue;
+                }
+
+                // Check that departure times match
+                const DiscreteTrip* trips = getTripsBegin(h);
+                for (size_t k = 0; k < fc.arr[level].size(); ++k) {
+                    if (fc.arr[level][k] != trips[k].departureTime) {
+                        if (errorCount < 10) {
+                            std::cout << "\n[FC VERIFY ERROR] Vertex " << u << " -> " << v << " (level " << level << ")"
+                                      << ": arr[" << k << "]=" << fc.arr[level][k]
+                                      << " but trip[" << k << "].dep=" << trips[k].departureTime << std::endl;
+                        }
+                        errorCount++;
+                        break;
+                    }
+                }
+            }
+        }
+
+        std::cout << "\nFC Verification: checked " << checkedVertices << " vertices, found " << errorCount << " errors" << std::endl;
+    }
+
 private:
-    // [FRACTIONAL CASCADING] Build cascaded structure for a single vertex
-    // Based on Python: fractional_cascading_precomputation()
-    // IMPORTANT: Builds on the FILTERED trip data (after dominated connection removal)
     inline void buildFractionalCascadingForVertex(Vertex u) noexcept {
         FractionalCascadingData& fc = fcData[u];
 
-        // Collect all outgoing edges with their departure times (FROM FILTERED DATA)
         struct EdgeInfo {
             Vertex target;
+            Edge edgeId;  // Store the Edge ID
             std::vector<int> departureTimes;
             size_t tripCount;
         };
@@ -415,9 +430,9 @@ private:
             if (h.tripCount > 0) {
                 EdgeInfo info;
                 info.target = v;
+                info.edgeId = e;  // Store the Edge ID
                 info.tripCount = h.tripCount;
 
-                // Extract departure times FROM THE FILTERED TRIPS
                 const DiscreteTrip* begin = getTripsBegin(h);
                 const DiscreteTrip* end = getTripsEnd(h);
                 for (const DiscreteTrip* it = begin; it != end; ++it) {
@@ -426,8 +441,8 @@ private:
 
                 edgeInfos.push_back(std::move(info));
             } else if (h.walkTime != never) {
-                // Walking-only edge
                 fc.walkingNodes.push_back(v);
+                fc.walkingEdges.push_back(e);  // Store walking Edge ID
             }
         }
 
@@ -437,36 +452,33 @@ private:
         std::sort(edgeInfos.begin(), edgeInfos.end(),
             [](const EdgeInfo& a, const EdgeInfo& b) { return a.tripCount < b.tripCount; });
 
-        // Build cascaded arrays (in reverse order, then reverse at end)
+        // Build cascaded arrays
         std::vector<std::vector<int>> m_arr_temp;
         std::vector<std::vector<int>> arr_temp;
         std::vector<Vertex> reachable_temp;
+        std::vector<Edge> edges_temp;
 
         for (size_t i = 0; i < edgeInfos.size(); ++i) {
             arr_temp.push_back(edgeInfos[i].departureTimes);
             reachable_temp.push_back(edgeInfos[i].target);
+            edges_temp.push_back(edgeInfos[i].edgeId);
 
             std::vector<int> cascaded;
 
             if (i == 0) {
-                // First level: just the departure times plus sentinels
                 cascaded.push_back(-1);
                 cascaded.insert(cascaded.end(), edgeInfos[i].departureTimes.begin(), edgeInfos[i].departureTimes.end());
                 cascaded.push_back(1000000000);
             } else {
-                // Subsequent levels: merge with every other element from previous level
                 cascaded = edgeInfos[i].departureTimes;
 
-                // Add every other element from previous cascaded array
                 for (size_t k = 1; k < m_arr_temp[i - 1].size(); k += 2) {
                     cascaded.push_back(m_arr_temp[i - 1][k]);
                 }
 
-                // Remove duplicates and sort
                 std::sort(cascaded.begin(), cascaded.end());
                 cascaded.erase(std::unique(cascaded.begin(), cascaded.end()), cascaded.end());
 
-                // Add sentinels
                 cascaded.insert(cascaded.begin(), -1);
                 cascaded.push_back(1000000000);
             }
@@ -478,16 +490,16 @@ private:
         std::reverse(m_arr_temp.begin(), m_arr_temp.end());
         std::reverse(arr_temp.begin(), arr_temp.end());
         std::reverse(reachable_temp.begin(), reachable_temp.end());
+        std::reverse(edges_temp.begin(), edges_temp.end());
 
         fc.m_arr = std::move(m_arr_temp);
         fc.arr = std::move(arr_temp);
         fc.reachableNodes = std::move(reachable_temp);
+        fc.reachableEdges = std::move(edges_temp);
 
-        // Build pointers
         buildPointersForVertex(fc);
     }
 
-    // [FRACTIONAL CASCADING] Build pointer structures for a vertex
     inline void buildPointersForVertex(FractionalCascadingData& fc) noexcept {
         fc.pointers.resize(fc.m_arr.size());
 
@@ -497,11 +509,9 @@ private:
             for (size_t j = 0; j < fc.m_arr[i].size(); ++j) {
                 FCPointer ptr;
 
-                // startIndex: position in original array arr[i]
                 ptr.startIndex = std::lower_bound(fc.arr[i].begin(), fc.arr[i].end(), fc.m_arr[i][j])
                                  - fc.arr[i].begin();
 
-                // nextLoc: position in next cascaded array m_arr[i+1]
                 if (i == fc.m_arr.size() - 1) {
                     ptr.nextLoc = 0;
                 } else {
@@ -515,20 +525,6 @@ private:
     }
 
 public:
-    // [FRACTIONAL CASCADING] Get edge from u to v in O(1)
-    inline Edge getEdge(Vertex u, Vertex v) const noexcept {
-        auto it = edgeMap.find({u, v});
-        if (it != edgeMap.end()) {
-            return it->second;
-        }
-        return noEdge;  // Edge not found
-    }
-
-    // [FRACTIONAL CASCADING] Check if edge exists
-    inline bool hasEdge(Vertex u, Vertex v) const noexcept {
-        return edgeMap.find({u, v}) != edgeMap.end();
-    }
-
     inline size_t numVertices() const noexcept {
         return graph.numVertices();
     }
@@ -591,24 +587,17 @@ public:
     inline typename UnderlyingGraph::EdgeHandle addTimeDependentEdge(const Vertex from, const Vertex to, const EdgeTripsHandle& func) {
         typename UnderlyingGraph::EdgeHandle handle = graph.addEdge(from, to);
         handle.set(Function, func);
-
-        // Add to edge map for O(1) lookup
-        Edge edgeId = handle;
-        edgeMap[{from, to}] = edgeId;
-
         return handle;
     }
 
     inline void serialize(const std::string& fileName) const noexcept {
         graph.writeBinary(fileName);
         IO::serialize(fileName + ".data", tripOffsets, allTripLegs, allDiscreteTrips, allSuffixMinArrivals);
-        // TODO: Serialize FC data
     }
 
     inline void deserialize(const std::string& fileName) noexcept {
         graph.readBinary(fileName);
         IO::deserialize(fileName + ".data", tripOffsets, allTripLegs, allDiscreteTrips, allSuffixMinArrivals);
-        // TODO: Deserialize FC data
     }
 
     inline static TimeDependentGraphFC FromBinary(const std::string& fileName) noexcept {
