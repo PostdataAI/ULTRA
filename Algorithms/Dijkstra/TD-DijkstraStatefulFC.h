@@ -295,29 +295,35 @@ private:
         }
     }
 
-    // Relax a specific edge knowing the start index in the trip list
-    // Based on Python: _update_vertex_with_node_index_fractional_cascading_bus_profile
+    // Relax a specific edge using the pre-computed start index from FC
+    // NO binary search - the FC structure has already done the work!
     inline void relaxEdgeWithStartIndex(const Vertex u, const Vertex v, const int departureTime, const int startIndex) noexcept {
         // O(1) edge lookup using the edge map
         const Edge e = graph.getEdge(u, v);
-        if (e == noEdge) return;  // Edge not found (shouldn't happen with valid FC data)
+        if (e == noEdge) return;
 
         const EdgeTripsHandle& h = graph.get(Function, e);
 
         int bestArrival = never;
 
         // Python: if start_index < f.size: l = f.buses[start_index].a
-        // In Python, f.buses[start_index].a is the arrival time
-        // We use suffix minima to get the best arrival from this departure onwards
+        // Use startIndex DIRECTLY - no search needed!
         if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
-            const int* suffixMin = graph.getSuffixMinBegin(h);
-            bestArrival = suffixMin[startIndex];
+            // Get the trip at this index
+            const DiscreteTrip* trips = graph.getTripsBegin(h);
+            const DiscreteTrip& trip = trips[startIndex];
+
+            // Verify this trip is valid (departs at or after departureTime)
+            if (trip.departureTime >= departureTime) {
+                // Use suffix minima for best arrival from this index onward
+                const int* suffixMin = graph.getSuffixMinBegin(h);
+                bestArrival = suffixMin[startIndex];
+            }
         }
 
-        // Python: if f.walk: walk_time = winner_weight + f.walk.w
+        // Check walking option
         if (h.walkTime != never) {
             int walkArrival = departureTime + h.walkTime;
-            // Python: if walk_time < l: use walk, else use bus
             bestArrival = std::min(bestArrival, walkArrival);
         }
 
