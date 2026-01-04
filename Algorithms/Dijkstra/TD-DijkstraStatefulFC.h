@@ -315,7 +315,7 @@ private:
 
         for (const Edge e : graph.edgesFrom(u)) {
             const Vertex v = graph.get(ToVertex, e);
-            const int arrivalAtV = graph.getArrivalTime(e, departureTime);
+            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
 
             if (arrivalAtV < never) {
                 relaxEdge(v, u, arrivalAtV);

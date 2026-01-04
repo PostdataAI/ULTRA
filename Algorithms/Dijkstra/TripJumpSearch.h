@@ -10,36 +10,28 @@
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"
+#include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-// TripJumpSearch: Optimized Time-Dependent Dijkstra for graphs with dominated connection filtering.
+// TripJumpSearch: Time-Dependent Dijkstra with direct jump optimization.
 //
-// KEY INSIGHT:
-// When dominated connections are filtered (as in TimeDependentGraphClassic), the trip list
-// for each edge has the following property: no trip T2 departing after T1 can have an earlier
-// arrival than T1. This means:
-//   1. The first valid trip (departing >= current time) gives the minimum arrival via transit.
-//   2. We can use suffix-min arrays to get the answer in O(1) after binary search.
-//   3. NO ITERATION through trips is needed - just binary search + direct lookup.
+// KEY OPTIMIZATION:
+// With dominated connections filtered (TimeDependentGraphClassic), the first valid trip
+// after binary search is guaranteed to have the best arrival time. We use suffix-min
+// for O(1) pruning and then scan the entire trip to reach all subsequent stops.
 //
-// COMPARISON WITH TimeDependentDijkstraStateful:
-// - TimeDependentDijkstraStateful: Must iterate through trips because dominated connections exist
-// - TripJumpSearch: Direct jump to best trip using suffix-min, no iteration needed
-//
-// OPTIMIZATIONS:
-// 1. Direct Jump: Binary search finds first valid trip, suffix-min gives best arrival instantly.
-// 2. Merged Node State (Hot/Cold unified).
-// 3. Inner-loop Pruning with target upper bound.
-// 4. Flattened Graph Data & Direct Pointers.
-// 5. Search-based Path Reconstruction (No metadata tracking in hot path).
+// FEATURES:
+// 1. Direct Jump: Binary search + suffix-min for instant trip selection (no iteration)
+// 2. Trip Scanning: Expands entire trip to visit all subsequent stops
+// 3. Target Pruning: Early termination when target bound is reached
+// 4. Vehicle Labels: Prevents redundant trip scanning
 
-template<typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
+template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TripJumpSearch {
 public:
-    using Graph = TimeDependentGraphClassic;
+    using Graph = GRAPH;
     using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
     using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
@@ -86,7 +78,6 @@ public:
         , timeStamp(0)
         , settleCount(0)
         , relaxCount(0)
-        , tripJumpCount(0)
         , targetVertex(noVertex) {
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
@@ -99,7 +90,6 @@ public:
         timeStamp++;
         settleCount = 0;
         relaxCount = 0;
-        tripJumpCount = 0;
         timer.restart();
         targetVertex = noVertex;
         profiler.donePhase(TDD::PHASE_CLEAR);
@@ -160,7 +150,6 @@ public:
 
     inline int getSettleCount() const noexcept { return settleCount; }
     inline int getRelaxCount() const noexcept { return relaxCount; }
-    inline int getTripJumpCount() const noexcept { return tripJumpCount; }
     inline double getElapsedMilliseconds() const noexcept { return timer.elapsedMilliseconds(); }
 
     struct PathEntry {
@@ -259,16 +248,12 @@ private:
                 }
             }
 
-            // 2. Scan Edges - OPTIMIZED FOR DOMINATED-FILTERED GRAPHS
+            // 2. Scan Edges with DIRECT JUMP
             for (const Edge e : graph.edgesFrom(u)) {
                 const Vertex v = graph.get(ToVertex, e);
 
                 if (u < numberOfStops) {
                     const auto& atf = graph.get(Function, e);
-
-                    // KEY OPTIMIZATION: With dominated connections filtered,
-                    // we can directly jump to the best trip without iteration.
-                    // The suffix-min array gives us the answer in O(1) after binary search.
 
                     if (atf.tripCount > 0) {
                         const DiscreteTrip* begin = graph.getTripsBegin(atf);
@@ -281,33 +266,19 @@ private:
 
                         if (it != end) {
                             const size_t idx = std::distance(begin, it);
+                            const int minPossibleArrival = suffixBase[idx];
 
-                            // DIRECT JUMP: suffix-min gives the best arrival instantly
-                            // No iteration needed because dominated connections are filtered!
-                            const int bestArrival = suffixBase[idx];
-                            tripJumpCount++;
-
-                            // Prune if this can't improve target
+                            // Target pruning: skip if suffix-min can't improve target
                             if constexpr (TARGET_PRUNING) {
-                                if (targetUpperBound != never && bestArrival >= targetUpperBound) {
-                                    // Skip - can't improve target
+                                if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) {
                                     goto walk_edge;
                                 }
                             }
 
-                            // Find the actual trip with this best arrival for scanning
-                            // Since connections are filtered, we find the first trip with this arrival
-                            const DiscreteTrip* bestTrip = it;
-                            for (auto scan = it; scan != end; ++scan) {
-                                if (scan->arrivalTime == bestArrival) {
-                                    bestTrip = scan;
-                                    break;
-                                }
-                            }
-
-                            // Scan the trip from the boarding point
-                            scanTrip(bestTrip->tripId, bestTrip->departureStopIndex + 1,
-                                    bestTrip->arrivalTime, u, targetUpperBound);
+                            // DIRECT JUMP: With dominated connections filtered,
+                            // the first valid trip (it) has the best arrival.
+                            // Scan the entire trip to reach all subsequent stops.
+                            scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
                         }
                     }
                 }
@@ -323,6 +294,7 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
+    // Scan entire trip from boarding point, visiting all subsequent stops
     inline void scanTrip(const int tripId, const uint16_t startStopIndex, const int arrivalAtStart,
                          const Vertex boardStop, const int targetUpperBound) noexcept {
         int currentArrivalTime = arrivalAtStart;
@@ -337,6 +309,7 @@ private:
 
             VehicleLabel& L = globalVehicleLabels[idx];
 
+            // Early termination: already visited this stop-event with better time
             if (L.timeStamp == timeStamp && L.arrivalTime <= currentArrivalTime) {
                 return;
             }
@@ -347,8 +320,10 @@ private:
             const auto& currentLeg = graph.getTripLeg(idx);
             Vertex currentStopVertex = currentLeg.stopId;
 
+            // Relax edge to this stop
             relaxWalking(currentStopVertex, boardStop, State::OnVehicle, currentArrivalTime, false);
 
+            // Move to next stop on the trip
             if (idx + 1 < endAbsIndex) {
                 const auto& nextLeg = graph.getTripLeg(idx + 1);
                 currentArrivalTime = nextLeg.arrivalTime;
@@ -388,7 +363,6 @@ private:
     int timeStamp;
     int settleCount;
     int relaxCount;
-    int tripJumpCount;  // Count of direct jumps (no iteration)
     Timer timer;
     std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
     Vertex targetVertex;

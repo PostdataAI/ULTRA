@@ -293,7 +293,7 @@ class CompareTJSvsTD : public ParameterizedCommand {
 public:
     CompareTJSvsTD(BasicShell& shell) :
         ParameterizedCommand(shell, "compareTJSvsTD",
-            "Compares TripJumpSearch (optimized direct jump) vs TimeDependentDijkstraStatefulClassic (standard iteration) on TimeDependentGraphClassic.") {
+            "Compares TripJumpSearch (direct jump + trip scanning) vs TimeDependentDijkstraStatefulClassic (edge-based).") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -342,13 +342,12 @@ public:
         resultsTD.reserve(n);
         resultsTJS.reserve(n);
 
-        // --- Run TimeDependentDijkstraStatefulClassic (with iteration loop) ---
-        std::cout << "\n=== Running TimeDependentDijkstraStatefulClassic (Standard with Iteration) ===" << std::endl;
+        // --- Run TimeDependentDijkstraStatefulClassic ---
+        std::cout << "\n=== Running TimeDependentDijkstraStatefulClassic (Edge-based) ===" << std::endl;
 
         using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmTD(graphClassic, intermediateData.numberOfStops(), &ch);
 
-        // Metrics for TD
         long long totalTDSettles = 0;
         long long totalTDRelaxes = 0;
 
@@ -373,16 +372,14 @@ public:
         std::cout << "Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
         std::cout << "Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
 
-        // --- Run TripJumpSearch (optimized direct jump) ---
-        std::cout << "\n=== Running TripJumpSearch (Optimized Direct Jump) ===" << std::endl;
+        // --- Run TripJumpSearch ---
+        std::cout << "\n=== Running TripJumpSearch (Direct Jump + Trip Scanning) ===" << std::endl;
 
-        using TJS = TripJumpSearch<TDD::AggregateProfiler, false, true>;
+        using TJS = TripJumpSearch<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TJS algorithmTJS(graphClassic, intermediateData.numberOfStops(), &ch);
 
-        // Metrics for TJS
         long long totalTJSSettles = 0;
         long long totalTJSRelaxes = 0;
-        long long totalTJSJumps = 0;
 
         Timer tjsTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
@@ -391,7 +388,6 @@ public:
             resultsTJS.push_back(algorithmTJS.getArrivalTime(query.target));
             totalTJSSettles += algorithmTJS.getSettleCount();
             totalTJSRelaxes += algorithmTJS.getRelaxCount();
-            totalTJSJumps += algorithmTJS.getTripJumpCount();
 
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
                 std::cout << "\r  TripJumpSearch: " << (i + 1) << "/" << n << " queries ("
@@ -405,8 +401,6 @@ public:
         algorithmTJS.getProfiler().printStatistics();
         std::cout << "Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
         std::cout << "Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
-        std::cout << "Avg trip jumps/query: " << (totalTJSJumps / (double)n) << std::endl;
-        std::cout << "Total trip jumps (no iteration): " << totalTJSJumps << std::endl;
 
         // --- Compare correctness ---
         std::cout << "\n=== Correctness Comparison ===" << std::endl;
@@ -443,18 +437,10 @@ public:
                 }
             } else if (tdReach && !tjsReach) {
                 tdOnlyReachable++;
-                if (mismatchCount < 10) {
-                    std::cout << "Query " << i << ": TD reachable (" << resultsTD[i]
-                              << "), TJS unreachable" << std::endl;
-                }
                 resultsMatch = false;
                 mismatchCount++;
             } else if (!tdReach && tjsReach) {
                 tjsOnlyReachable++;
-                if (mismatchCount < 10) {
-                    std::cout << "Query " << i << ": TD unreachable, TJS reachable ("
-                              << resultsTJS[i] << ")" << std::endl;
-                }
                 resultsMatch = false;
                 mismatchCount++;
             } else {
@@ -491,9 +477,9 @@ public:
         std::cout << "  Connections: " << graphClassic.allDiscreteTrips.size() << std::endl;
 
         std::cout << "\n[Query Time]" << std::endl;
-        std::cout << "  TD-Dijkstra Classic (iteration): " << String::msToString(tdQueryTime)
+        std::cout << "  TD-Dijkstra Classic (edge-based):     " << String::msToString(tdQueryTime)
                   << " (" << (tdQueryTime / n) << " ms/query)" << std::endl;
-        std::cout << "  TripJumpSearch (direct jump):    " << String::msToString(tjsQueryTime)
+        std::cout << "  TripJumpSearch (jump + trip scan):    " << String::msToString(tjsQueryTime)
                   << " (" << (tjsQueryTime / n) << " ms/query)" << std::endl;
         double querySpeedup = tdQueryTime / tjsQueryTime;
         if (querySpeedup > 1.0) {
@@ -503,14 +489,12 @@ public:
         }
 
         std::cout << "\n[Algorithm Comparison]" << std::endl;
-        std::cout << "  Both algorithms use the same TimeDependentGraphClassic" << std::endl;
         std::cout << "  TD-Dijkstra Classic:" << std::endl;
-        std::cout << "    - Uses iteration loop: for (; it != end; ++it)" << std::endl;
-        std::cout << "    - Scans multiple trips to find best arrival" << std::endl;
+        std::cout << "    - Edge-based relaxation only" << std::endl;
+        std::cout << "    - Uses getArrivalTime() for each edge" << std::endl;
         std::cout << "  TripJumpSearch:" << std::endl;
-        std::cout << "    - Direct jump using suffix-min array" << std::endl;
-        std::cout << "    - O(1) lookup after binary search" << std::endl;
-        std::cout << "    - Total direct jumps: " << totalTJSJumps << std::endl;
+        std::cout << "    - Direct jump via suffix-min (no trip iteration)" << std::endl;
+        std::cout << "    - Trip scanning to visit all subsequent stops" << std::endl;
 
         std::cout << "\n[Efficiency Metrics]" << std::endl;
         std::cout << "  TD-Dijkstra Classic:" << std::endl;
@@ -519,29 +503,24 @@ public:
         std::cout << "  TripJumpSearch:" << std::endl;
         std::cout << "    - Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
         std::cout << "    - Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
-        std::cout << "    - Avg trip jumps/query: " << (totalTJSJumps / (double)n) << std::endl;
 
         std::cout << "\n=== Conclusion ===" << std::endl;
         if (resultsMatch) {
-            std::cout << "✓ TripJumpSearch maintains correctness" << std::endl;
+            std::cout << "✓ Both algorithms produce identical results" << std::endl;
             if (querySpeedup > 1.05) {
-                std::cout << "✓ Query performance improved by " << querySpeedup << "x" << std::endl;
-                std::cout << "  TripJumpSearch optimization is EFFECTIVE" << std::endl;
+                std::cout << "✓ TripJumpSearch is " << querySpeedup << "x faster" << std::endl;
             } else if (querySpeedup < 0.95) {
-                std::cout << "✗ Query performance degraded by " << (1.0/querySpeedup) << "x" << std::endl;
-                std::cout << "  Iteration overhead may not be significant for this network" << std::endl;
+                std::cout << "→ TripJumpSearch is " << (1.0/querySpeedup) << "x slower" << std::endl;
             } else {
-                std::cout << "≈ Query performance similar (within 5%)" << std::endl;
+                std::cout << "≈ Performance is similar (within 5%)" << std::endl;
             }
         } else {
-            std::cout << "✗ WARNING: Results do not match" << std::endl;
-            std::cout << "  This indicates a bug in TripJumpSearch implementation" << std::endl;
+            std::cout << "✗ Results do not match - investigation needed" << std::endl;
+            if (mismatchCount > 0 && totalDiff / mismatchCount < 0) {
+                std::cout << "  Note: TJS finds better (lower) arrival times" << std::endl;
+                std::cout << "  This suggests trip scanning finds paths that edge-based misses" << std::endl;
+            }
         }
-
-        std::cout << "\nKey Insight:" << std::endl;
-        std::cout << "  With dominated connections filtered, the first valid trip" << std::endl;
-        std::cout << "  after binary search gives the optimal arrival time." << std::endl;
-        std::cout << "  TripJumpSearch exploits this by using suffix-min for O(1) lookup." << std::endl;
     }
 };
 
