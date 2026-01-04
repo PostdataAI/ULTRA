@@ -15,18 +15,24 @@
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-// TripJumpSearch: Time-Dependent Dijkstra with direct jump optimization.
+// TripJumpSearch: Time-Dependent Dijkstra optimized for filtered graphs.
 //
-// KEY OPTIMIZATION:
-// With dominated connections filtered (TimeDependentGraphClassic), the first valid trip
-// after binary search is guaranteed to have the best arrival time. We use suffix-min
-// for O(1) pruning and then scan the entire trip to reach all subsequent stops.
+// KEY OPTIMIZATION - NO ITERATION LOOP:
+// With dominated connections filtered in TimeDependentGraphClassic, the first
+// valid trip after binary search is guaranteed to have the best arrival at
+// the immediate next stop. No need for: for (; it != end; ++it)
 //
-// FEATURES:
-// 1. Direct Jump: Binary search + suffix-min for instant trip selection (no iteration)
-// 2. Trip Scanning: Expands entire trip to visit all subsequent stops
-// 3. Target Pruning: Early termination when target bound is reached
-// 4. Vehicle Labels: Prevents redundant trip scanning
+// WHY THIS IS CORRECT:
+// - Edge (u→v) filtering ensures first valid trip = best arrival at v
+// - Trip scanning reaches all subsequent stops (w, x, ...) on that trip
+// - Dijkstra iteration will later settle v and find better paths to w, x
+//   if other trips from v are better
+//
+// Example:
+// - T1: u@8:00 → v@8:30 → w@9:00 (best for u→v, used for trip scan)
+// - T2: u@8:10 → v@8:35 → w@8:50 (filtered out on edge u→v)
+// When we settle v@8:30, we search edge v→w and find T2 departing 8:35→8:50
+// This improves w from 9:00 to 8:50. Dijkstra handles it!
 
 template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TripJumpSearch {
@@ -38,7 +44,7 @@ public:
 
     enum class State : uint8_t { AtStop = 0, OnVehicle = 1 };
 
-    // --- MERGED NODE LABEL (24 bytes) ---
+    // --- MERGED NODE LABEL ---
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex), parentState(State::AtStop), reachedByWalking(false) {}
@@ -55,14 +61,14 @@ public:
             return arrivalTime < other->arrivalTime;
         }
 
-        int arrivalTime;            // 4
-        int timeStamp;              // 4
-        Vertex parent;              // 4
-        State parentState;          // 1
-        bool reachedByWalking;      // 1
+        int arrivalTime;
+        int timeStamp;
+        Vertex parent;
+        State parentState;
+        bool reachedByWalking;
     };
 
-    // --- LITE VEHICLE LABEL (8 bytes) ---
+    // --- VEHICLE LABEL for trip scanning ---
     struct VehicleLabel {
         int arrivalTime = intMax;
         int timeStamp = -1;
@@ -248,7 +254,7 @@ private:
                 }
             }
 
-            // 2. Scan Edges with DIRECT JUMP
+            // 2. Scan Edges - DIRECT JUMP (no iteration loop)
             for (const Edge e : graph.edgesFrom(u)) {
                 const Vertex v = graph.get(ToVertex, e);
 
@@ -268,16 +274,16 @@ private:
                             const size_t idx = std::distance(begin, it);
                             const int minPossibleArrival = suffixBase[idx];
 
-                            // Target pruning: skip if suffix-min can't improve target
+                            // Target pruning
                             if constexpr (TARGET_PRUNING) {
                                 if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) {
                                     goto walk_edge;
                                 }
                             }
 
-                            // DIRECT JUMP: With dominated connections filtered,
-                            // the first valid trip (it) has the best arrival.
-                            // Scan the entire trip to reach all subsequent stops.
+                            // DIRECT JUMP: No iteration loop!
+                            // First valid trip is optimal for this edge (dominated connections filtered)
+                            // Scan this single trip to reach all subsequent stops
                             scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
                         }
                     }
@@ -294,7 +300,7 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
-    // Scan entire trip from boarding point, visiting all subsequent stops
+    // Scan entire trip from boarding point, visiting ALL subsequent stops
     inline void scanTrip(const int tripId, const uint16_t startStopIndex, const int arrivalAtStart,
                          const Vertex boardStop, const int targetUpperBound) noexcept {
         int currentArrivalTime = arrivalAtStart;
@@ -320,7 +326,7 @@ private:
             const auto& currentLeg = graph.getTripLeg(idx);
             Vertex currentStopVertex = currentLeg.stopId;
 
-            // Relax edge to this stop
+            // Relax to this stop
             relaxWalking(currentStopVertex, boardStop, State::OnVehicle, currentArrivalTime, false);
 
             // Move to next stop on the trip
