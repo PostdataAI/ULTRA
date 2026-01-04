@@ -17,6 +17,8 @@ using namespace Shell;
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulCST.h"
+#include "../../Algorithms/Dijkstra/TripJumpSearch.h"
+#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulBST.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -56,6 +58,490 @@ public:
         std::cout << "\nSerializing to: " << outputFile << std::endl;
         graph.serialize(outputFile);
         std::cout << "Time-dependent graph saved successfully!" << std::endl;
+    }
+};
+class CompareBSTvsClassicVariants : public ParameterizedCommand {
+
+public:
+    CompareBSTvsClassicVariants(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareBSTvsClassicVariants",
+            "Compares TimeDependentDijkstraStatefulBST (Balanced Search Trees) vs TimeDependentDijkstraStatefulClassic (standard binary search).") {
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // --- Load Intermediate data ---
+        std::cout << "\n=== Loading Intermediate data ===" << std::endl;
+
+        Intermediate::Data intermediateData;
+
+        try {
+            intermediateData.deserialize(getParameter("Intermediate input file"));
+        } catch (...) {
+            std::cout << "ERROR: Could not load intermediate data." << std::endl;
+            std::cout << "Please create intermediate data first using the appropriate command." << std::endl;
+            return;
+        }
+
+        std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+
+        // --- Build both graph variants ---
+        std::cout << "\n=== Building TimeDependentGraphClassic (Standard Binary Search) ===" << std::endl;
+        Timer buildTimer;
+        TimeDependentGraphClassic graphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        double buildTimeClassic = buildTimer.elapsedMilliseconds();
+
+        std::cout << "Classic graph created: " << graphClassic.numVertices() << " vertices, "
+                  << graphClassic.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeClassic) << std::endl;
+        graphClassic.printStatistics();
+
+        std::cout << "\n=== Building TimeDependentGraphBST (with Balanced Search Trees) ===" << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphBST graphBST = TimeDependentGraphBST::FromIntermediate(intermediateData);
+        double buildTimeBST = buildTimer.elapsedMilliseconds();
+
+        std::cout << "BST graph created: " << graphBST.numVertices() << " vertices, "
+                  << graphBST.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeBST) << std::endl;
+        graphBST.printStatistics();
+
+        // --- Load CoreCH ---
+        std::cout << "\n=== Loading CoreCH ===" << std::endl;
+        CH::CH ch(getParameter("Core CH input file"));
+        std::cout << "CoreCH loaded." << std::endl;
+
+        // --- Generate queries ---
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.getGraph(FORWARD).numVertices(), n);
+
+        std::vector<int> resultsClassic;
+        std::vector<int> resultsBST;
+        resultsClassic.reserve(n);
+        resultsBST.reserve(n);
+
+        // --- Run Classic Dijkstra ---
+        std::cout << "\n=== Running TD-Dijkstra (Classic - Standard Binary Search) ===" << std::endl;
+
+        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
+
+        Timer classicTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmClassic.run(query.source, query.departureTime, query.target);
+            resultsClassic.push_back(algorithmClassic.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  Classic: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(classicTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double classicQueryTime = classicTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics Classic (Standard Binary Search) ---" << std::endl;
+        algorithmClassic.getProfiler().printStatistics();
+
+        // --- Run BST Dijkstra ---
+        std::cout << "\n=== Running TD-Dijkstra (BST - Balanced Search Trees) ===" << std::endl;
+
+        using TDDijkstraBST = TimeDependentDijkstraStatefulBST<TDD::AggregateProfiler, false, true>;
+        TDDijkstraBST algorithmBST(graphBST, intermediateData.numberOfStops(), &ch);
+
+        Timer bstTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmBST.run(query.source, query.departureTime, query.target);
+            resultsBST.push_back(algorithmBST.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  BST: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(bstTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double bstQueryTime = bstTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics BST (Balanced Search Trees) ---" << std::endl;
+        algorithmBST.getProfiler().printStatistics();
+        std::cout << "\nBalanced Search Tree Usage:" << std::endl;
+        algorithmBST.printBSTStatistics();
+
+        // --- Compare correctness ---
+        std::cout << "\n=== Correctness Comparison ===" << std::endl;
+        bool resultsMatch = true;
+        size_t mismatchCount = 0;
+        int maxDiff = 0;
+        double totalDiff = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            if (resultsClassic[i] != resultsBST[i]) {
+                int diff = resultsBST[i] - resultsClassic[i];
+                if (std::abs(diff) > maxDiff) maxDiff = std::abs(diff);
+                totalDiff += std::abs(diff);
+                if (mismatchCount < 10) {
+                    std::cout << "Mismatch for query " << i
+                              << " (src=" << queries[i].source
+                              << ", tgt=" << queries[i].target
+                              << ", dep=" << queries[i].departureTime << "): "
+                              << "Classic=" << resultsClassic[i]
+                              << ", BST=" << resultsBST[i]
+                              << " (diff=" << diff << "s)" << std::endl;
+                }
+                resultsMatch = false;
+                mismatchCount++;
+            }
+        }
+
+        if (resultsMatch) {
+            std::cout << "✓ SUCCESS: All " << n << " results match perfectly!" << std::endl;
+        } else {
+            std::cout << "✗ FAILURE: " << mismatchCount << "/" << n << " mismatches ("
+                      << (100.0 * mismatchCount / n) << "%)" << std::endl;
+            std::cout << "Max difference: " << maxDiff << "s" << std::endl;
+            if (mismatchCount > 0) {
+                std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
+            }
+        }
+
+        // --- Performance comparison ---
+        std::cout << "\n=== Performance Summary ===" << std::endl;
+        std::cout << std::fixed << std::setprecision(2);
+
+        std::cout << "\n[Build Time]" << std::endl;
+        std::cout << "  Classic (Binary Search):       " << String::msToString(buildTimeClassic) << std::endl;
+        std::cout << "  BST (Balanced Search Trees):   " << String::msToString(buildTimeBST) << std::endl;
+        double buildSpeedup = buildTimeClassic / buildTimeBST;
+        if (buildSpeedup > 1.0) {
+            std::cout << "  → BST is " << buildSpeedup << "x faster to build" << std::endl;
+        } else {
+            std::cout << "  → BST is " << (1.0 / buildSpeedup) << "x slower to build" << std::endl;
+        }
+
+        std::cout << "\n[Query Time]" << std::endl;
+        std::cout << "  Classic (Binary Search):       " << String::msToString(classicQueryTime)
+                  << " (" << (classicQueryTime / n) << " ms/query)" << std::endl;
+        std::cout << "  BST (Balanced Search Trees):   " << String::msToString(bstQueryTime)
+                  << " (" << (bstQueryTime / n) << " ms/query)" << std::endl;
+        double querySpeedup = classicQueryTime / bstQueryTime;
+        if (querySpeedup > 1.0) {
+            std::cout << "  → BST is " << querySpeedup << "x faster" << std::endl;
+        } else {
+            std::cout << "  → BST is " << (1.0 / querySpeedup) << "x slower" << std::endl;
+        }
+
+        std::cout << "\n[Graph Size]" << std::endl;
+        std::cout << "  Vertices: " << graphClassic.numVertices() << " (both)" << std::endl;
+        std::cout << "  Edges: " << graphClassic.numEdges() << " (both)" << std::endl;
+
+        size_t classicTripCount = graphClassic.allDiscreteTrips.size();
+        size_t bstTripCount = graphBST.allDiscreteTrips.size();
+
+        std::cout << "\n[Connection Count]" << std::endl;
+        std::cout << "  Classic:  " << classicTripCount << " connections" << std::endl;
+        std::cout << "  BST:      " << bstTripCount << " connections" << std::endl;
+        if (classicTripCount != bstTripCount) {
+            double diff = 100.0 * std::abs((double)bstTripCount - classicTripCount) / classicTripCount;
+            std::cout << "  → Difference: " << diff << "%" << std::endl;
+        } else {
+            std::cout << "  → Same number of connections" << std::endl;
+        }
+
+        std::cout << "\n[Memory Usage Estimation]" << std::endl;
+        size_t classicMemory = classicTripCount * sizeof(DiscreteTrip);
+        size_t bstMemory = bstTripCount * sizeof(DiscreteTrip);
+
+        std::cout << "  Classic core data: ~" << (classicMemory / 1024.0 / 1024.0) << " MB" << std::endl;
+        std::cout << "  BST core data:     ~" << (bstMemory / 1024.0 / 1024.0) << " MB" << std::endl;
+        std::cout << "  BST has additional tree structures (std::map per vertex)" << std::endl;
+
+        std::cout << "\n=== Conclusion ===" << std::endl;
+        if (resultsMatch) {
+            std::cout << "✓ Balanced Search Trees maintains correctness" << std::endl;
+            if (querySpeedup > 1.05) {
+                std::cout << "✓ Query performance improved by " << querySpeedup << "x" << std::endl;
+                std::cout << "  BST optimization is EFFECTIVE for this network" << std::endl;
+            } else if (querySpeedup < 0.95) {
+                std::cout << "✗ Query performance degraded by " << (1.0/querySpeedup) << "x" << std::endl;
+                std::cout << "  BST overhead may outweigh benefits for this network structure" << std::endl;
+            } else {
+                std::cout << "≈ Query performance similar (within 5%)" << std::endl;
+                std::cout << "  BST provides comparable performance to binary search" << std::endl;
+            }
+
+            std::cout << "\nBST vs CST comparison:" << std::endl;
+            std::cout << "  • Both store same precomputed data" << std::endl;
+            std::cout << "  • BST uses std::map (Red-Black Tree) - O(log n) lookup" << std::endl;
+            std::cout << "  • CST uses sorted array - O(log n) binary search" << std::endl;
+            std::cout << "  • BST may have better insertion performance (not used here)" << std::endl;
+            std::cout << "  • CST typically has better cache locality for queries" << std::endl;
+        } else {
+            std::cout << "✗ WARNING: Results do not match - BST implementation may have errors" << std::endl;
+        }
+
+        std::cout << "\nTrade-offs:" << std::endl;
+        std::cout << "  Build Time: BST requires " << (buildTimeBST / buildTimeClassic) << "x preprocessing" << std::endl;
+        std::cout << "  Query Time: BST provides " << querySpeedup << "x speedup" << std::endl;
+        std::cout << "  Memory: BST stores O(unique_departures * num_edges) per vertex in tree structure" << std::endl;
+    }
+};
+
+class CompareTJSvsTD : public ParameterizedCommand {
+
+public:
+    CompareTJSvsTD(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareTJSvsTD",
+            "Compares TripJumpSearch (optimized direct jump) vs TimeDependentDijkstraStatefulClassic (standard iteration) on TimeDependentGraphClassic.") {
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // --- Load Intermediate data ---
+        std::cout << "\n=== Loading Intermediate data ===" << std::endl;
+
+        Intermediate::Data intermediateData;
+
+        try {
+            intermediateData.deserialize(getParameter("Intermediate input file"));
+        } catch (...) {
+            std::cout << "ERROR: Could not load intermediate data." << std::endl;
+            std::cout << "Please create intermediate data first using the appropriate command." << std::endl;
+            return;
+        }
+
+        std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+
+        // --- Build TimeDependentGraphClassic (used by both algorithms) ---
+        std::cout << "\n=== Building TimeDependentGraphClassic (With Dominated Connection Filtering) ===" << std::endl;
+        Timer buildTimer;
+        TimeDependentGraphClassic graphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        double buildTimeClassic = buildTimer.elapsedMilliseconds();
+
+        std::cout << "Classic graph created: " << graphClassic.numVertices() << " vertices, "
+                  << graphClassic.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeClassic) << std::endl;
+        graphClassic.printStatistics();
+
+        // --- Load CoreCH ---
+        std::cout << "\n=== Loading CoreCH ===" << std::endl;
+        CH::CH ch(getParameter("Core CH input file"));
+        std::cout << "CoreCH loaded." << std::endl;
+
+        // --- Generate queries ---
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(
+            ch.getGraph(FORWARD).numVertices(), n);
+
+        std::vector<int> resultsTD;
+        std::vector<int> resultsTJS;
+        resultsTD.reserve(n);
+        resultsTJS.reserve(n);
+
+        // --- Run TimeDependentDijkstraStatefulClassic (with iteration loop) ---
+        std::cout << "\n=== Running TimeDependentDijkstraStatefulClassic (Standard with Iteration) ===" << std::endl;
+
+        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDDijkstraClassic algorithmTD(graphClassic, intermediateData.numberOfStops(), &ch);
+
+        // Metrics for TD
+        long long totalTDSettles = 0;
+        long long totalTDRelaxes = 0;
+
+        Timer tdTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmTD.run(query.source, query.departureTime, query.target);
+            resultsTD.push_back(algorithmTD.getArrivalTime(query.target));
+            totalTDSettles += algorithmTD.getSettleCount();
+            totalTDRelaxes += algorithmTD.getRelaxCount();
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD-Dijkstra Classic: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double tdQueryTime = tdTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics TimeDependentDijkstraStatefulClassic ---" << std::endl;
+        algorithmTD.getProfiler().printStatistics();
+        std::cout << "Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
+        std::cout << "Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
+
+        // --- Run TripJumpSearch (optimized direct jump) ---
+        std::cout << "\n=== Running TripJumpSearch (Optimized Direct Jump) ===" << std::endl;
+
+        using TJS = TripJumpSearch<TDD::AggregateProfiler, false, true>;
+        TJS algorithmTJS(graphClassic, intermediateData.numberOfStops(), &ch);
+
+        // Metrics for TJS
+        long long totalTJSSettles = 0;
+        long long totalTJSRelaxes = 0;
+        long long totalTJSJumps = 0;
+
+        Timer tjsTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmTJS.run(query.source, query.departureTime, query.target);
+            resultsTJS.push_back(algorithmTJS.getArrivalTime(query.target));
+            totalTJSSettles += algorithmTJS.getSettleCount();
+            totalTJSRelaxes += algorithmTJS.getRelaxCount();
+            totalTJSJumps += algorithmTJS.getTripJumpCount();
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TripJumpSearch: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(tjsTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double tjsQueryTime = tjsTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics TripJumpSearch ---" << std::endl;
+        algorithmTJS.getProfiler().printStatistics();
+        std::cout << "Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
+        std::cout << "Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
+        std::cout << "Avg trip jumps/query: " << (totalTJSJumps / (double)n) << std::endl;
+        std::cout << "Total trip jumps (no iteration): " << totalTJSJumps << std::endl;
+
+        // --- Compare correctness ---
+        std::cout << "\n=== Correctness Comparison ===" << std::endl;
+        bool resultsMatch = true;
+        size_t mismatchCount = 0;
+        int maxDiff = 0;
+        double totalDiff = 0;
+        size_t bothReachable = 0;
+        size_t tdOnlyReachable = 0;
+        size_t tjsOnlyReachable = 0;
+        size_t neitherReachable = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            bool tdReach = (resultsTD[i] != never && resultsTD[i] != intMax);
+            bool tjsReach = (resultsTJS[i] != never && resultsTJS[i] != intMax);
+
+            if (tdReach && tjsReach) {
+                bothReachable++;
+                if (resultsTD[i] != resultsTJS[i]) {
+                    int diff = resultsTJS[i] - resultsTD[i];
+                    if (std::abs(diff) > maxDiff) maxDiff = std::abs(diff);
+                    totalDiff += std::abs(diff);
+                    if (mismatchCount < 10) {
+                        std::cout << "Mismatch for query " << i
+                                  << " (src=" << queries[i].source
+                                  << ", tgt=" << queries[i].target
+                                  << ", dep=" << queries[i].departureTime << "): "
+                                  << "TD=" << resultsTD[i]
+                                  << ", TJS=" << resultsTJS[i]
+                                  << " (diff=" << diff << "s)" << std::endl;
+                    }
+                    resultsMatch = false;
+                    mismatchCount++;
+                }
+            } else if (tdReach && !tjsReach) {
+                tdOnlyReachable++;
+                if (mismatchCount < 10) {
+                    std::cout << "Query " << i << ": TD reachable (" << resultsTD[i]
+                              << "), TJS unreachable" << std::endl;
+                }
+                resultsMatch = false;
+                mismatchCount++;
+            } else if (!tdReach && tjsReach) {
+                tjsOnlyReachable++;
+                if (mismatchCount < 10) {
+                    std::cout << "Query " << i << ": TD unreachable, TJS reachable ("
+                              << resultsTJS[i] << ")" << std::endl;
+                }
+                resultsMatch = false;
+                mismatchCount++;
+            } else {
+                neitherReachable++;
+            }
+        }
+
+        std::cout << "\nReachability summary:" << std::endl;
+        std::cout << "  Both reachable:    " << bothReachable << std::endl;
+        std::cout << "  TD only:           " << tdOnlyReachable << std::endl;
+        std::cout << "  TJS only:          " << tjsOnlyReachable << std::endl;
+        std::cout << "  Neither:           " << neitherReachable << std::endl;
+
+        if (resultsMatch) {
+            std::cout << "\n✓ SUCCESS: All " << n << " results match perfectly!" << std::endl;
+        } else {
+            std::cout << "\n✗ FAILURE: " << mismatchCount << "/" << n << " mismatches ("
+                      << (100.0 * mismatchCount / n) << "%)" << std::endl;
+            if (maxDiff > 0) {
+                std::cout << "Max difference: " << maxDiff << "s" << std::endl;
+                std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
+            }
+        }
+
+        // --- Performance comparison ---
+        std::cout << "\n=== Performance Summary ===" << std::endl;
+        std::cout << std::fixed << std::setprecision(2);
+
+        std::cout << "\n[Graph Info]" << std::endl;
+        std::cout << "  Graph: TimeDependentGraphClassic (with dominated connection filtering)" << std::endl;
+        std::cout << "  Build time: " << String::msToString(buildTimeClassic) << std::endl;
+        std::cout << "  Vertices: " << graphClassic.numVertices() << std::endl;
+        std::cout << "  Edges: " << graphClassic.numEdges() << std::endl;
+        std::cout << "  Connections: " << graphClassic.allDiscreteTrips.size() << std::endl;
+
+        std::cout << "\n[Query Time]" << std::endl;
+        std::cout << "  TD-Dijkstra Classic (iteration): " << String::msToString(tdQueryTime)
+                  << " (" << (tdQueryTime / n) << " ms/query)" << std::endl;
+        std::cout << "  TripJumpSearch (direct jump):    " << String::msToString(tjsQueryTime)
+                  << " (" << (tjsQueryTime / n) << " ms/query)" << std::endl;
+        double querySpeedup = tdQueryTime / tjsQueryTime;
+        if (querySpeedup > 1.0) {
+            std::cout << "  → TripJumpSearch is " << querySpeedup << "x faster" << std::endl;
+        } else {
+            std::cout << "  → TripJumpSearch is " << (1.0 / querySpeedup) << "x slower" << std::endl;
+        }
+
+        std::cout << "\n[Algorithm Comparison]" << std::endl;
+        std::cout << "  Both algorithms use the same TimeDependentGraphClassic" << std::endl;
+        std::cout << "  TD-Dijkstra Classic:" << std::endl;
+        std::cout << "    - Uses iteration loop: for (; it != end; ++it)" << std::endl;
+        std::cout << "    - Scans multiple trips to find best arrival" << std::endl;
+        std::cout << "  TripJumpSearch:" << std::endl;
+        std::cout << "    - Direct jump using suffix-min array" << std::endl;
+        std::cout << "    - O(1) lookup after binary search" << std::endl;
+        std::cout << "    - Total direct jumps: " << totalTJSJumps << std::endl;
+
+        std::cout << "\n[Efficiency Metrics]" << std::endl;
+        std::cout << "  TD-Dijkstra Classic:" << std::endl;
+        std::cout << "    - Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
+        std::cout << "    - Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
+        std::cout << "  TripJumpSearch:" << std::endl;
+        std::cout << "    - Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
+        std::cout << "    - Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
+        std::cout << "    - Avg trip jumps/query: " << (totalTJSJumps / (double)n) << std::endl;
+
+        std::cout << "\n=== Conclusion ===" << std::endl;
+        if (resultsMatch) {
+            std::cout << "✓ TripJumpSearch maintains correctness" << std::endl;
+            if (querySpeedup > 1.05) {
+                std::cout << "✓ Query performance improved by " << querySpeedup << "x" << std::endl;
+                std::cout << "  TripJumpSearch optimization is EFFECTIVE" << std::endl;
+            } else if (querySpeedup < 0.95) {
+                std::cout << "✗ Query performance degraded by " << (1.0/querySpeedup) << "x" << std::endl;
+                std::cout << "  Iteration overhead may not be significant for this network" << std::endl;
+            } else {
+                std::cout << "≈ Query performance similar (within 5%)" << std::endl;
+            }
+        } else {
+            std::cout << "✗ WARNING: Results do not match" << std::endl;
+            std::cout << "  This indicates a bug in TripJumpSearch implementation" << std::endl;
+        }
+
+        std::cout << "\nKey Insight:" << std::endl;
+        std::cout << "  With dominated connections filtered, the first valid trip" << std::endl;
+        std::cout << "  after binary search gives the optimal arrival time." << std::endl;
+        std::cout << "  TripJumpSearch exploits this by using suffix-min for O(1) lookup." << std::endl;
     }
 };
 
