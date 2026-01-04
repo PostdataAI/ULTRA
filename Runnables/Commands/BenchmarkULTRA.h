@@ -16,6 +16,7 @@ using namespace Shell;
 #include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
+#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulCST.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -430,6 +431,238 @@ public:
 
         const CSA::Journey journey = algorithm.getJourney(targetStop);
         std::cout << "Journey: " << journey << std::endl;
+    }
+};
+
+class CompareCSTvsClassicVariants : public ParameterizedCommand {
+
+public:
+    CompareCSTvsClassicVariants(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareCSTvsClassicVariants",
+            "Compares TimeDependentDijkstraStatefulCST (Combined Search Trees) vs TimeDependentDijkstraStatefulClassic (standard binary search).") {
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // --- Load Intermediate data ---
+        std::cout << "\n=== Loading Intermediate data ===" << std::endl;
+
+        Intermediate::Data intermediateData;
+
+        try {
+            intermediateData.deserialize(getParameter("Intermediate input file"));
+        } catch (...) {
+            std::cout << "ERROR: Could not load intermediate data." << std::endl;
+            std::cout << "Please create intermediate data first using the appropriate command." << std::endl;
+            return;
+        }
+
+        std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+
+        // --- Build both graph variants ---
+        std::cout << "\n=== Building TimeDependentGraphClassic (Standard Binary Search) ===" << std::endl;
+        Timer buildTimer;
+        TimeDependentGraphClassic graphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        double buildTimeClassic = buildTimer.elapsedMilliseconds();
+
+        std::cout << "Classic graph created: " << graphClassic.numVertices() << " vertices, "
+                  << graphClassic.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeClassic) << std::endl;
+        graphClassic.printStatistics();
+
+        std::cout << "\n=== Building TimeDependentGraphCST (with Combined Search Trees) ===" << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphCST graphCST = TimeDependentGraphCST::FromIntermediate(intermediateData);
+        double buildTimeCST = buildTimer.elapsedMilliseconds();
+
+        std::cout << "CST graph created: " << graphCST.numVertices() << " vertices, "
+                  << graphCST.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeCST) << std::endl;
+        graphCST.printStatistics();
+
+        // --- Load CoreCH ---
+        std::cout << "\n=== Loading CoreCH ===" << std::endl;
+        CH::CH ch(getParameter("Core CH input file"));
+        std::cout << "CoreCH loaded." << std::endl;
+
+        // --- Generate queries ---
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.getGraph(FORWARD).numVertices(), n);
+
+        std::vector<int> resultsClassic;
+        std::vector<int> resultsCST;
+        resultsClassic.reserve(n);
+        resultsCST.reserve(n);
+
+        // --- Run Classic Dijkstra ---
+        std::cout << "\n=== Running TD-Dijkstra (Classic - Standard Binary Search) ===" << std::endl;
+
+        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
+
+        Timer classicTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmClassic.run(query.source, query.departureTime, query.target);
+            resultsClassic.push_back(algorithmClassic.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  Classic: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(classicTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double classicQueryTime = classicTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics Classic (Standard Binary Search) ---" << std::endl;
+        algorithmClassic.getProfiler().printStatistics();
+
+        // --- Run CST Dijkstra ---
+        std::cout << "\n=== Running TD-Dijkstra (CST - Combined Search Trees) ===" << std::endl;
+
+        using TDDijkstraCST = TimeDependentDijkstraStatefulCST<TDD::AggregateProfiler, false, true>;
+        TDDijkstraCST algorithmCST(graphCST, intermediateData.numberOfStops(), &ch);
+
+        Timer cstTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithmCST.run(query.source, query.departureTime, query.target);
+            resultsCST.push_back(algorithmCST.getArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  CST: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(cstTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        double cstQueryTime = cstTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics CST (Combined Search Trees) ---" << std::endl;
+        algorithmCST.getProfiler().printStatistics();
+        std::cout << "\nCombined Search Tree Usage:" << std::endl;
+        algorithmCST.printCSTStatistics();
+
+        // --- Compare correctness ---
+        std::cout << "\n=== Correctness Comparison ===" << std::endl;
+        bool resultsMatch = true;
+        size_t mismatchCount = 0;
+        int maxDiff = 0;
+        double totalDiff = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            if (resultsClassic[i] != resultsCST[i]) {
+                int diff = resultsCST[i] - resultsClassic[i];
+                if (std::abs(diff) > maxDiff) maxDiff = std::abs(diff);
+                totalDiff += std::abs(diff);
+                if (mismatchCount < 10) {
+                    std::cout << "Mismatch for query " << i
+                              << " (src=" << queries[i].source
+                              << ", tgt=" << queries[i].target
+                              << ", dep=" << queries[i].departureTime << "): "
+                              << "Classic=" << resultsClassic[i]
+                              << ", CST=" << resultsCST[i]
+                              << " (diff=" << diff << "s)" << std::endl;
+                }
+                resultsMatch = false;
+                mismatchCount++;
+            }
+        }
+
+        if (resultsMatch) {
+            std::cout << "✓ SUCCESS: All " << n << " results match perfectly!" << std::endl;
+        } else {
+            std::cout << "✗ FAILURE: " << mismatchCount << "/" << n << " mismatches ("
+                      << (100.0 * mismatchCount / n) << "%)" << std::endl;
+            std::cout << "Max difference: " << maxDiff << "s" << std::endl;
+            if (mismatchCount > 0) {
+                std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
+            }
+        }
+
+        // --- Performance comparison ---
+        std::cout << "\n=== Performance Summary ===" << std::endl;
+        std::cout << std::fixed << std::setprecision(2);
+
+        std::cout << "\n[Build Time]" << std::endl;
+        std::cout << "  Classic (Binary Search):       " << String::msToString(buildTimeClassic) << std::endl;
+        std::cout << "  CST (Combined Search Trees):   " << String::msToString(buildTimeCST) << std::endl;
+        double buildSpeedup = buildTimeClassic / buildTimeCST;
+        if (buildSpeedup > 1.0) {
+            std::cout << "  → CST is " << buildSpeedup << "x faster to build" << std::endl;
+        } else {
+            std::cout << "  → CST is " << (1.0 / buildSpeedup) << "x slower to build" << std::endl;
+        }
+
+        std::cout << "\n[Query Time]" << std::endl;
+        std::cout << "  Classic (Binary Search):       " << String::msToString(classicQueryTime)
+                  << " (" << (classicQueryTime / n) << " ms/query)" << std::endl;
+        std::cout << "  CST (Combined Search Trees):   " << String::msToString(cstQueryTime)
+                  << " (" << (cstQueryTime / n) << " ms/query)" << std::endl;
+        double querySpeedup = classicQueryTime / cstQueryTime;
+        if (querySpeedup > 1.0) {
+            std::cout << "  → CST is " << querySpeedup << "x faster" << std::endl;
+        } else {
+            std::cout << "  → CST is " << (1.0 / querySpeedup) << "x slower" << std::endl;
+        }
+
+        std::cout << "\n[Graph Size]" << std::endl;
+        std::cout << "  Vertices: " << graphClassic.numVertices() << " (both)" << std::endl;
+        std::cout << "  Edges: " << graphClassic.numEdges() << " (both)" << std::endl;
+
+        size_t classicTripCount = graphClassic.allDiscreteTrips.size();
+        size_t cstTripCount = graphCST.allDiscreteTrips.size();
+
+        std::cout << "\n[Connection Count]" << std::endl;
+        std::cout << "  Classic:  " << classicTripCount << " connections" << std::endl;
+        std::cout << "  CST:      " << cstTripCount << " connections" << std::endl;
+        if (classicTripCount != cstTripCount) {
+            double diff = 100.0 * std::abs((double)cstTripCount - classicTripCount) / classicTripCount;
+            std::cout << "  → Difference: " << diff << "%" << std::endl;
+        } else {
+            std::cout << "  → Same number of connections" << std::endl;
+        }
+
+        std::cout << "\n[Memory Usage Estimation]" << std::endl;
+        size_t classicMemory = classicTripCount * sizeof(DiscreteTrip);
+        size_t cstMemory = cstTripCount * sizeof(DiscreteTrip);
+
+        std::cout << "  Classic core data: ~" << (classicMemory / 1024.0 / 1024.0) << " MB" << std::endl;
+        std::cout << "  CST core data:     ~" << (cstMemory / 1024.0 / 1024.0) << " MB" << std::endl;
+        std::cout << "  CST has additional lookup tables (schedule + positionInEdge)" << std::endl;
+
+        std::cout << "\n=== Conclusion ===" << std::endl;
+        if (resultsMatch) {
+            std::cout << "✓ Combined Search Trees maintains correctness" << std::endl;
+            if (querySpeedup > 1.05) {
+                std::cout << "✓ Query performance improved by " << querySpeedup << "x" << std::endl;
+                std::cout << "  CST optimization is EFFECTIVE for this network" << std::endl;
+            } else if (querySpeedup < 0.95) {
+                std::cout << "✗ Query performance degraded by " << (1.0/querySpeedup) << "x" << std::endl;
+                std::cout << "  CST overhead may outweigh benefits for this network structure" << std::endl;
+            } else {
+                std::cout << "≈ Query performance similar (within 5%)" << std::endl;
+                std::cout << "  CST provides comparable performance to binary search" << std::endl;
+            }
+
+            std::cout << "\nCST is most effective when:" << std::endl;
+            std::cout << "  • Vertices have many outgoing edges sharing departure times" << std::endl;
+            std::cout << "  • Multiple edges depart at similar times" << std::endl;
+            std::cout << "  • Network has synchronized timetables" << std::endl;
+        } else {
+            std::cout << "✗ WARNING: Results do not match - CST implementation may have errors" << std::endl;
+        }
+
+        std::cout << "\nTrade-offs:" << std::endl;
+        std::cout << "  Build Time: CST requires " << (buildTimeCST / buildTimeClassic) << "x preprocessing" << std::endl;
+        std::cout << "  Query Time: CST provides " << querySpeedup << "x speedup" << std::endl;
+        std::cout << "  Memory: CST stores O(schedule_size * num_edges) per vertex" << std::endl;
+
+        std::cout << "\nCST vs FC comparison:" << std::endl;
+        std::cout << "  • CST: O(1) lookup per edge after ONE binary search" << std::endl;
+        std::cout << "  • FC:  O(1) cascading through sorted edge list" << std::endl;
+        std::cout << "  • CST uses more memory but simpler lookup" << std::endl;
+        std::cout << "  • FC uses less memory but requires cascading logic" << std::endl;
     }
 };
 
