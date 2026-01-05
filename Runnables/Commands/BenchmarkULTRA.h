@@ -17,7 +17,7 @@ using namespace Shell;
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulCST.h"
-#include "../../Algorithms/Dijkstra/TripJumpSearch.h"
+#include "../../Algorithms/Dijkstra/JumpTripSearch.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulBST.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
@@ -48,12 +48,12 @@ public:
         std::cout << "Loading intermediate data..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         intermediateData.printInfo();
-        
+
         std::cout << "\nBuilding time-dependent graph..." << std::endl;
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
-        
+
         const std::string outputFile = getParameter("TD Graph output file");
         std::cout << "\nSerializing to: " << outputFile << std::endl;
         graph.serialize(outputFile);
@@ -288,12 +288,12 @@ public:
     }
 };
 
-class CompareTJSvsTD : public ParameterizedCommand {
+class CompareJTSvsTD : public ParameterizedCommand {
 
 public:
-    CompareTJSvsTD(BasicShell& shell) :
-        ParameterizedCommand(shell, "compareTJSvsTD",
-            "Compares TripJumpSearch (direct jump + trip scanning) vs TimeDependentDijkstraStatefulClassic (edge-based).") {
+    CompareJTSvsTD(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareJTSvsTD",
+            "Compares JumpTripSearch on JTSGraph vs TimeDependentDijkstraStateful on TimeDependentGraphClassic.") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -316,16 +316,27 @@ public:
         std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
                   << intermediateData.numberOfTrips() << " trips" << std::endl;
 
-        // --- Build TimeDependentGraphClassic (used by both algorithms) ---
-        std::cout << "\n=== Building TimeDependentGraphClassic (With Dominated Connection Filtering) ===" << std::endl;
-        Timer buildTimer;
+        // --- Build TimeDependentGraphClassic ---
+        std::cout << "\n=== Building TimeDependentGraphClassic ===" << std::endl;
+        Timer buildTimerClassic;
         TimeDependentGraphClassic graphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
-        double buildTimeClassic = buildTimer.elapsedMilliseconds();
+        double buildTimeClassic = buildTimerClassic.elapsedMilliseconds();
 
         std::cout << "Classic graph created: " << graphClassic.numVertices() << " vertices, "
                   << graphClassic.numEdges() << " edges" << std::endl;
         std::cout << "Build time: " << String::msToString(buildTimeClassic) << std::endl;
         graphClassic.printStatistics();
+
+        // --- Build JTSGraph ---
+        std::cout << "\n=== Building JTSGraph ===" << std::endl;
+        Timer buildTimerJTS;
+        JTSGraph jtsGraph = JTSGraph::FromIntermediate(intermediateData);
+        double buildTimeJTS = buildTimerJTS.elapsedMilliseconds();
+
+        std::cout << "JTS graph created: " << jtsGraph.numVertices() << " vertices, "
+                  << jtsGraph.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeJTS) << std::endl;
+        jtsGraph.printStatistics();
 
         // --- Load CoreCH ---
         std::cout << "\n=== Loading CoreCH ===" << std::endl;
@@ -338,15 +349,15 @@ public:
             ch.getGraph(FORWARD).numVertices(), n);
 
         std::vector<int> resultsTD;
-        std::vector<int> resultsTJS;
+        std::vector<int> resultsJTS;
         resultsTD.reserve(n);
-        resultsTJS.reserve(n);
+        resultsJTS.reserve(n);
 
-        // --- Run TimeDependentDijkstraStatefulClassic ---
-        std::cout << "\n=== Running TimeDependentDijkstraStatefulClassic (Edge-based) ===" << std::endl;
+        // --- Run TimeDependentDijkstraStateful on TimeDependentGraphClassic ---
+        std::cout << "\n=== Running TimeDependentDijkstraStateful on TimeDependentGraphClassic ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
-        TDDijkstraClassic algorithmTD(graphClassic, intermediateData.numberOfStops(), &ch);
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDDijkstra algorithmTD(graphClassic, intermediateData.numberOfStops(), &ch);
 
         long long totalTDSettles = 0;
         long long totalTDRelaxes = 0;
@@ -360,47 +371,47 @@ public:
             totalTDRelaxes += algorithmTD.getRelaxCount();
 
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TD-Dijkstra Classic: " << (i + 1) << "/" << n << " queries ("
+                std::cout << "\r  TD-Dijkstra: " << (i + 1) << "/" << n << " queries ("
                           << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
         double tdQueryTime = tdTimer.elapsedMilliseconds();
         std::cout << std::endl;
 
-        std::cout << "--- Statistics TimeDependentDijkstraStatefulClassic ---" << std::endl;
+        std::cout << "--- Statistics TimeDependentDijkstraStateful ---" << std::endl;
         algorithmTD.getProfiler().printStatistics();
         std::cout << "Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
         std::cout << "Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
 
-        // --- Run TripJumpSearch ---
-        std::cout << "\n=== Running TripJumpSearch (Direct Jump + Trip Scanning) ===" << std::endl;
+        // --- Run JumpTripSearch on JTSGraph ---
+        std::cout << "\n=== Running JumpTripSearch on JTSGraph ===" << std::endl;
 
-        using TJS = TripJumpSearch<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
-        TJS algorithmTJS(graphClassic, intermediateData.numberOfStops(), &ch);
+        using JTSType = JumpTripSearch<JTSGraph, TDD::AggregateProfiler, false, true>;
+        JTSType algorithmJTS(jtsGraph, intermediateData.numberOfStops(), &ch);
 
-        long long totalTJSSettles = 0;
-        long long totalTJSRelaxes = 0;
+        long long totalJTSSettles = 0;
+        long long totalJTSRelaxes = 0;
 
-        Timer tjsTimer;
+        Timer jtsTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
             const VertexQuery& query = queries[i];
-            algorithmTJS.run(query.source, query.departureTime, query.target);
-            resultsTJS.push_back(algorithmTJS.getArrivalTime(query.target));
-            totalTJSSettles += algorithmTJS.getSettleCount();
-            totalTJSRelaxes += algorithmTJS.getRelaxCount();
+            algorithmJTS.run(query.source, query.departureTime, query.target);
+            resultsJTS.push_back(algorithmJTS.getArrivalTime(query.target));
+            totalJTSSettles += algorithmJTS.getSettleCount();
+            totalJTSRelaxes += algorithmJTS.getRelaxCount();
 
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TripJumpSearch: " << (i + 1) << "/" << n << " queries ("
-                          << String::msToString(tjsTimer.elapsedMilliseconds()) << ")" << std::flush;
+                std::cout << "\r  JumpTripSearch: " << (i + 1) << "/" << n << " queries ("
+                          << String::msToString(jtsTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
-        double tjsQueryTime = tjsTimer.elapsedMilliseconds();
+        double jtsQueryTime = jtsTimer.elapsedMilliseconds();
         std::cout << std::endl;
 
-        std::cout << "--- Statistics TripJumpSearch ---" << std::endl;
-        algorithmTJS.getProfiler().printStatistics();
-        std::cout << "Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
-        std::cout << "Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
+        std::cout << "--- Statistics JumpTripSearch ---" << std::endl;
+        algorithmJTS.getProfiler().printStatistics();
+        std::cout << "Avg settles/query: " << (totalJTSSettles / (double)n) << std::endl;
+        std::cout << "Avg relaxes/query: " << (totalJTSRelaxes / (double)n) << std::endl;
 
         // --- Compare correctness ---
         std::cout << "\n=== Correctness Comparison ===" << std::endl;
@@ -410,17 +421,17 @@ public:
         double totalDiff = 0;
         size_t bothReachable = 0;
         size_t tdOnlyReachable = 0;
-        size_t tjsOnlyReachable = 0;
+        size_t jtsOnlyReachable = 0;
         size_t neitherReachable = 0;
 
         for (size_t i = 0; i < n; ++i) {
             bool tdReach = (resultsTD[i] != never && resultsTD[i] != intMax);
-            bool tjsReach = (resultsTJS[i] != never && resultsTJS[i] != intMax);
+            bool jtsReach = (resultsJTS[i] != never && resultsJTS[i] != intMax);
 
-            if (tdReach && tjsReach) {
+            if (tdReach && jtsReach) {
                 bothReachable++;
-                if (resultsTD[i] != resultsTJS[i]) {
-                    int diff = resultsTJS[i] - resultsTD[i];
+                if (resultsTD[i] != resultsJTS[i]) {
+                    int diff = resultsJTS[i] - resultsTD[i];
                     if (std::abs(diff) > maxDiff) maxDiff = std::abs(diff);
                     totalDiff += std::abs(diff);
                     if (mismatchCount < 10) {
@@ -429,18 +440,18 @@ public:
                                   << ", tgt=" << queries[i].target
                                   << ", dep=" << queries[i].departureTime << "): "
                                   << "TD=" << resultsTD[i]
-                                  << ", TJS=" << resultsTJS[i]
+                                  << ", JTS=" << resultsJTS[i]
                                   << " (diff=" << diff << "s)" << std::endl;
                     }
                     resultsMatch = false;
                     mismatchCount++;
                 }
-            } else if (tdReach && !tjsReach) {
+            } else if (tdReach && !jtsReach) {
                 tdOnlyReachable++;
                 resultsMatch = false;
                 mismatchCount++;
-            } else if (!tdReach && tjsReach) {
-                tjsOnlyReachable++;
+            } else if (!tdReach && jtsReach) {
+                jtsOnlyReachable++;
                 resultsMatch = false;
                 mismatchCount++;
             } else {
@@ -451,7 +462,7 @@ public:
         std::cout << "\nReachability summary:" << std::endl;
         std::cout << "  Both reachable:    " << bothReachable << std::endl;
         std::cout << "  TD only:           " << tdOnlyReachable << std::endl;
-        std::cout << "  TJS only:          " << tjsOnlyReachable << std::endl;
+        std::cout << "  JTS only:          " << jtsOnlyReachable << std::endl;
         std::cout << "  Neither:           " << neitherReachable << std::endl;
 
         if (resultsMatch) {
@@ -469,57 +480,42 @@ public:
         std::cout << "\n=== Performance Summary ===" << std::endl;
         std::cout << std::fixed << std::setprecision(2);
 
-        std::cout << "\n[Graph Info]" << std::endl;
-        std::cout << "  Graph: TimeDependentGraphClassic (with dominated connection filtering)" << std::endl;
+        std::cout << "\n[Graph Info - TimeDependentGraphClassic]" << std::endl;
         std::cout << "  Build time: " << String::msToString(buildTimeClassic) << std::endl;
         std::cout << "  Vertices: " << graphClassic.numVertices() << std::endl;
         std::cout << "  Edges: " << graphClassic.numEdges() << std::endl;
         std::cout << "  Connections: " << graphClassic.allDiscreteTrips.size() << std::endl;
 
+        std::cout << "\n[Graph Info - JTSGraph]" << std::endl;
+        std::cout << "  Build time: " << String::msToString(buildTimeJTS) << std::endl;
+        std::cout << "  Vertices: " << jtsGraph.numVertices() << std::endl;
+        std::cout << "  Edges: " << jtsGraph.numEdges() << std::endl;
+        std::cout << "  Connections: " << jtsGraph.allDiscreteTrips.size() << std::endl;
+
         std::cout << "\n[Query Time]" << std::endl;
-        std::cout << "  TD-Dijkstra Classic (edge-based):     " << String::msToString(tdQueryTime)
+        std::cout << "  TD-Dijkstra (TimeDependentGraphClassic): " << String::msToString(tdQueryTime)
                   << " (" << (tdQueryTime / n) << " ms/query)" << std::endl;
-        std::cout << "  TripJumpSearch (jump + trip scan):    " << String::msToString(tjsQueryTime)
-                  << " (" << (tjsQueryTime / n) << " ms/query)" << std::endl;
-        double querySpeedup = tdQueryTime / tjsQueryTime;
+        std::cout << "  JumpTripSearch (JTSGraph):               " << String::msToString(jtsQueryTime)
+                  << " (" << (jtsQueryTime / n) << " ms/query)" << std::endl;
+        double querySpeedup = tdQueryTime / jtsQueryTime;
         if (querySpeedup > 1.0) {
-            std::cout << "  → TripJumpSearch is " << querySpeedup << "x faster" << std::endl;
+            std::cout << "  → JumpTripSearch is " << querySpeedup << "x faster" << std::endl;
         } else {
-            std::cout << "  → TripJumpSearch is " << (1.0 / querySpeedup) << "x slower" << std::endl;
+            std::cout << "  → JumpTripSearch is " << (1.0 / querySpeedup) << "x slower" << std::endl;
         }
-
-        std::cout << "\n[Algorithm Comparison]" << std::endl;
-        std::cout << "  TD-Dijkstra Classic:" << std::endl;
-        std::cout << "    - Edge-based relaxation only" << std::endl;
-        std::cout << "    - Uses getArrivalTime() for each edge" << std::endl;
-        std::cout << "  TripJumpSearch:" << std::endl;
-        std::cout << "    - Direct jump via suffix-min (no trip iteration)" << std::endl;
-        std::cout << "    - Trip scanning to visit all subsequent stops" << std::endl;
-
-        std::cout << "\n[Efficiency Metrics]" << std::endl;
-        std::cout << "  TD-Dijkstra Classic:" << std::endl;
-        std::cout << "    - Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
-        std::cout << "    - Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
-        std::cout << "  TripJumpSearch:" << std::endl;
-        std::cout << "    - Avg settles/query: " << (totalTJSSettles / (double)n) << std::endl;
-        std::cout << "    - Avg relaxes/query: " << (totalTJSRelaxes / (double)n) << std::endl;
 
         std::cout << "\n=== Conclusion ===" << std::endl;
         if (resultsMatch) {
             std::cout << "✓ Both algorithms produce identical results" << std::endl;
             if (querySpeedup > 1.05) {
-                std::cout << "✓ TripJumpSearch is " << querySpeedup << "x faster" << std::endl;
+                std::cout << "✓ JumpTripSearch is " << querySpeedup << "x faster" << std::endl;
             } else if (querySpeedup < 0.95) {
-                std::cout << "→ TripJumpSearch is " << (1.0/querySpeedup) << "x slower" << std::endl;
+                std::cout << "→ JumpTripSearch is " << (1.0/querySpeedup) << "x slower" << std::endl;
             } else {
                 std::cout << "≈ Performance is similar (within 5%)" << std::endl;
             }
         } else {
             std::cout << "✗ Results do not match - investigation needed" << std::endl;
-            if (mismatchCount > 0 && totalDiff / mismatchCount < 0) {
-                std::cout << "  Note: TJS finds better (lower) arrival times" << std::endl;
-                std::cout << "  This suggests trip scanning finds paths that edge-based misses" << std::endl;
-            }
         }
     }
 };
@@ -1550,7 +1546,7 @@ public:
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
-        
+
         std::cout << "Creating reverse network..." << std::endl;
         RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
         std::cout << "Reverse network created." << std::endl;
@@ -1571,11 +1567,11 @@ public:
 
         if (pruningRule == 1) {
             raptorData.sortTransferGraphEdgesByTravelTime();
-            RAPTOR::DijkstraRAPTOR_prune<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+            RAPTOR::DijkstraRAPTOR_prune<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false>
                 algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
             runBenchmark(algorithm);
         } else {
-            RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+            RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false>
                 algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
             runBenchmark(algorithm);
         }
@@ -1610,7 +1606,7 @@ public:
         // --- DIAGNOSTIC END ---
 
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
         // Create the TD-Dijkstra algorithm instance
@@ -1629,7 +1625,7 @@ public:
         // Run all queries
         for (const VertexQuery& query : queries) {
             algorithm.run(query.source, query.departureTime, query.target);
-            
+
             if (algorithm.reachable(query.target)) {
                 reachableCount++;
                 totalArrivalTime += algorithm.getArrivalTime(query.target);
@@ -1639,13 +1635,13 @@ public:
         // Print statistics
         std::cout << "\n=== TD-Dijkstra Statistics ===" << std::endl;
         std::cout << "Total queries: " << n << std::endl;
-        std::cout << "Reachable targets: " << reachableCount << " (" 
+        std::cout << "Reachable targets: " << reachableCount << " ("
                   << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
-        
+
         algorithm.getProfiler().printStatistics();
-        
+
         if (reachableCount > 0) {
-            std::cout << "  Arrival time (reachable): " 
+            std::cout << "  Arrival time (reachable): "
                       << String::prettyInt(totalArrivalTime / reachableCount) << std::endl;
         }
     }
@@ -1670,7 +1666,7 @@ public:
                   << graph.numEdges() << " edges" << std::endl;
 
         using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
-        
+
         // Pass intermediateData to constructor
         TDDijkstra algorithm(graph);
 
@@ -1693,9 +1689,9 @@ public:
         std::cout << "Total queries: " << n << std::endl;
         std::cout << "Reachable targets: " << reachableCount << " ("
                   << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
-        
+
         algorithm.getProfiler().printStatistics();
-        
+
         if (reachableCount > 0) {
             std::cout << "  Arrival time (reachable): "
                       << String::prettyInt(totalArrivalTime / (int)reachableCount) << std::endl;
@@ -1717,13 +1713,13 @@ public:
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
-        
+
         std::cout << "Building time-dependent graph..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
-        
+
         std::cout << "Creating reverse network..." << std::endl;
         RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
         std::cout << "Reverse network created." << std::endl;
@@ -1736,16 +1732,16 @@ public:
 
         // --- Run MR without CH ---
         std::cout << "\n--- Running MR (without CH) ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false>
             algorithm_mr(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
-        
+
         Timer mrTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
             const VertexQuery& query = queries[i];
             algorithm_mr.run(query.source, query.departureTime, query.target);
             results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries (" 
+                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries ("
                           << String::msToString(mrTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
@@ -1767,12 +1763,12 @@ public:
             algorithm_td.run(query.source, query.departureTime, query.target);
             results_td.push_back(algorithm_td.getArrivalTime(query.target));
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries ("
                           << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
         std::cout << std::endl;
-        
+
         std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
         algorithm_td.getProfiler().printStatistics();
 
@@ -1785,14 +1781,14 @@ public:
             if (results_mr[i] != results_td[i]) {
                 // Check if this is a pure walking query (no transit used)
                 // A pure walking query has arrival time = departure time + walk distance
-                
+
                 if (mismatchCount < 10) {  // Only print first 10 mismatches
-                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
-                              << ", TD-Dijkstra=" << results_td[i] 
+                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i]
+                              << ", TD-Dijkstra=" << results_td[i]
                               << " (diff: " << (results_mr[i] - results_td[i]) << "s)"
                               << std::endl;
                 }
-                
+
                 results_match = false;
                 mismatchCount++;
                 mismatchIndices.push_back(i);
@@ -1828,13 +1824,13 @@ public:
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
-        
+
         std::cout << "Building time-dependent graph..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
-        
+
         std::cout << "Loading CoreCH..." << std::endl;
         CH::CH ch(getParameter("Core CH input file"));
         std::cout << "CoreCH loaded." << std::endl;
@@ -1847,16 +1843,16 @@ public:
 
         // --- Run MR with CoreCH ---
         std::cout << "\n--- Running MR (with CoreCH) ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>
             algorithm_mr(raptorData, ch);
-        
+
         Timer mrTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
             const VertexQuery& query = queries[i];
             algorithm_mr.run(query.source, query.departureTime, query.target);
             results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries (" 
+                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries ("
                           << String::msToString(mrTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
@@ -1877,12 +1873,12 @@ public:
             algorithm_td.run(query.source, query.departureTime, query.target);
             results_td.push_back(algorithm_td.getArrivalTime(query.target));
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries ("
                           << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
             }
         }
         std::cout << std::endl;
-        
+
         std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
         algorithm_td.getProfiler().printStatistics();
 
@@ -1892,26 +1888,26 @@ public:
         size_t mismatchCount = 0;
         int maxDiff = 0;
         double totalDiff = 0;
-        
+
         for (size_t i = 0; i < n; ++i) {
             if (results_mr[i] != results_td[i]) {
                 int diff = results_td[i] - results_mr[i];  // TD arrival - MR arrival (positive = TD is worse)
                 if (diff > maxDiff) maxDiff = diff;
                 totalDiff += diff;
                 if (mismatchCount < 5) {
-                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
-                              << ", TD-Dijkstra=" << results_td[i] 
+                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i]
+                              << ", TD-Dijkstra=" << results_td[i]
                               << " (TD is " << diff << "s later)" << std::endl;
                 }
                 results_match = false;
                 mismatchCount++;
             }
         }
-        
+
         if (results_match) {
             std::cout << "SUCCESS: All " << n << " results match!" << std::endl;
         } else {
-            std::cout << "FAILURE: " << mismatchCount << "/" << n << " mismatches (" 
+            std::cout << "FAILURE: " << mismatchCount << "/" << n << " mismatches ("
                       << (100.0 * mismatchCount / n) << "%)" << std::endl;
             std::cout << "Max difference: " << maxDiff << "s" << std::endl;
             std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
@@ -2430,15 +2426,15 @@ public:
         // 1. Load Data
         std::cout << "Loading intermediate data..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
-        
+
         std::cout << "Building time-dependent graph..." << std::endl;
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
         std::cout << "Graph built: " << graph.numVertices() << " vertices, " << graph.numEdges() << " edges." << std::endl;
-        
+
         std::string chFile = getParameter("CH data");
         CH::CH* chPointer = nullptr;
-        CH::CH chData; 
-        
+        CH::CH chData;
+
         if (chFile != "nullptr" && !chFile.empty()) {
             std::cout << "Loading CH data..." << std::endl;
             chData = CH::CH(chFile);
@@ -2457,10 +2453,10 @@ public:
         std::cout << "\n--- Running without Target Pruning ---" << std::endl;
         // Template Args: <Graph, Profiler, Debug=false, TargetPruning=false>
         using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, false>;
-        
+
         // Constructor: graph, numStops (0=auto), chPointer
         TDDijkstraNoPrune algo_no_pruning(graph, 0, chPointer);
-        
+
         for (const VertexQuery& query : queries) {
             algo_no_pruning.run(query.source, query.departureTime, query.target);
             results_no_pruning.push_back(algo_no_pruning.getArrivalTime(query.target));
@@ -2472,7 +2468,7 @@ public:
         std::cout << "\n--- Running with Target Pruning ---" << std::endl;
         // Template Args: <Graph, Profiler, Debug=false, TargetPruning=true>
         using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
-        
+
         TDDijkstraPrune algo_pruning(graph, 0, chPointer);
 
         for (const VertexQuery& query : queries) {
@@ -2487,7 +2483,7 @@ public:
         bool match = true;
         for (size_t i = 0; i < n; ++i) {
             if (results_no_pruning[i] != results_pruning[i]) {
-                std::cout << "Mismatch at query " << i << ": NoPrune=" << results_no_pruning[i] 
+                std::cout << "Mismatch at query " << i << ": NoPrune=" << results_no_pruning[i]
                           << " vs Prune=" << results_pruning[i] << std::endl;
                 match = false;
                 break;

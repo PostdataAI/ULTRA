@@ -10,32 +10,22 @@
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraph.h"
+#include "../../DataStructures/Graph/TimeDependentGraphJTS.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-// TripJumpSearch: Time-Dependent Dijkstra optimized for filtered graphs.
+// A two-state time-dependent Dijkstra optimized for memory bandwidth.
 //
-// KEY OPTIMIZATION - NO ITERATION LOOP:
-// With dominated connections filtered in TimeDependentGraphClassic, the first
-// valid trip after binary search is guaranteed to have the best arrival at
-// the immediate next stop. No need for: for (; it != end; ++it)
-//
-// WHY THIS IS CORRECT:
-// - Edge (u→v) filtering ensures first valid trip = best arrival at v
-// - Trip scanning reaches all subsequent stops (w, x, ...) on that trip
-// - Dijkstra iteration will later settle v and find better paths to w, x
-//   if other trips from v are better
-//
-// Example:
-// - T1: u@8:00 → v@8:30 → w@9:00 (best for u→v, used for trip scan)
-// - T2: u@8:10 → v@8:35 → w@8:50 (filtered out on edge u→v)
-// When we settle v@8:30, we search edge v→w and find T2 departing 8:35→8:50
-// This improves w from 9:00 to 8:50. Dijkstra handles it!
+// OPTIMIZATIONS:
+// 1. Single-Stream Vehicle Updates (No TripID/Parent in VehicleLabel).
+// 2. Merged Node State (Hot/Cold unified).
+// 3. Inner-loop Pruning.
+// 4. Flattened Graph Data & Direct Pointers.
+// 5. Search-based Path Reconstruction (No metadata tracking in hot path).
 
 template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
-class TripJumpSearch {
+class JumpTripSearch {
 public:
     using Graph = GRAPH;
     using Profiler = PROFILER;
@@ -44,7 +34,9 @@ public:
 
     enum class State : uint8_t { AtStop = 0, OnVehicle = 1 };
 
-    // --- MERGED NODE LABEL ---
+    // --- MERGED NODE LABEL (24 bytes) ---
+    // Stores everything needed for the node state.
+    // Removes the need for separate Hot/Cold vectors.
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex), parentState(State::AtStop), reachedByWalking(false) {}
@@ -61,21 +53,25 @@ public:
             return arrivalTime < other->arrivalTime;
         }
 
-        int arrivalTime;
-        int timeStamp;
-        Vertex parent;
-        State parentState;
-        bool reachedByWalking;
+        int arrivalTime;            // 4
+        int timeStamp;              // 4
+        Vertex parent;              // 4
+        State parentState;          // 1
+        bool reachedByWalking;      // 1
+        // Padding automatically handled by compiler
     };
 
-    // --- VEHICLE LABEL for trip scanning ---
+    // --- LITE VEHICLE LABEL (8 bytes) ---
+    // Minimal footprint for maximum scan speed.
     struct VehicleLabel {
-        int arrivalTime = intMax;
-        int timeStamp = -1;
+        int arrivalTime = intMax; // 4
+        int timeStamp = -1;       // 4
+        // Removed: tripId, parent.
+        // We use search-based reconstruction to recover these.
     };
 
 public:
-    TripJumpSearch(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
+    JumpTripSearch(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
         : graph(g)
         , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices())
@@ -162,7 +158,7 @@ public:
         Vertex vertex;
         State state;
         int arrivalTime;
-        int tripId;
+        int tripId; // -1 if walking
     };
 
     inline std::vector<PathEntry> getPath(const Vertex target) const noexcept {
@@ -173,11 +169,12 @@ public:
         Vertex curVertex = target;
         int curTime = endNode.arrivalTime;
 
+        // Reconstruct path backwards
         while (true) {
             path.push_back({curVertex, State::AtStop, curTime, -1});
 
             const NodeLabel& L = nodeLabels[curVertex];
-            if (L.parent == noVertex) break;
+            if (L.parent == noVertex) break; // Source reached
 
             Vertex prevVertex = L.parent;
             State viaState = L.parentState;
@@ -221,6 +218,7 @@ private:
         while (!Q.empty()) {
             const NodeLabel* cur = Q.extractFront();
 
+            // FIX: Deduce vertex index from pointer math
             const Vertex u = Vertex(cur - nodeLabels.data());
             const int t = cur->arrivalTime;
 
@@ -254,42 +252,46 @@ private:
                 }
             }
 
-            // 2. Scan Edges - DIRECT JUMP (no iteration loop)
+            // 2. Scan Edges
             for (const Edge e : graph.edgesFrom(u)) {
                 const Vertex v = graph.get(ToVertex, e);
 
                 if (u < numberOfStops) {
                     const auto& atf = graph.get(Function, e);
 
-                    if (atf.tripCount > 0) {
-                        const DiscreteTrip* begin = graph.getTripsBegin(atf);
-                        const DiscreteTrip* end = graph.getTripsEnd(atf);
-                        const int* suffixBase = graph.getSuffixMinBegin(atf);
+                    const DiscreteTrip* begin = graph.getTripsBegin(atf);
+                    const DiscreteTrip* end = graph.getTripsEnd(atf);
+                    const int* suffixBase = graph.getSuffixMinBegin(atf);
 
-                        // Binary search for first valid departure
-                        auto it = std::lower_bound(begin, end, t,
-                            [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                    int bestLocalArrival = never;
+                    const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
-                        if (it != end) {
-                            const size_t idx = std::distance(begin, it);
-                            const int minPossibleArrival = suffixBase[idx];
+                    for (auto it = begin; it != end; ++it) {
+                        // Skip trips that depart before we can catch them
+                        if (it->departureTime < t) continue;
 
-                            // Target pruning
-                            if constexpr (TARGET_PRUNING) {
-                                if (targetUpperBound != never && minPossibleArrival >= targetUpperBound) {
-                                    goto walk_edge;
-                                }
-                            }
+                        const size_t idx = std::distance(begin, it);
+                        const int minPossibleArrival = suffixBase[idx];
 
-                            // DIRECT JUMP: No iteration loop!
-                            // First valid trip is optimal for this edge (dominated connections filtered)
-                            // Scan this single trip to reach all subsequent stops
-                            scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
+                        if (bestLocalArrival != never) {
+                            if (minPossibleArrival > bestLocalArrival + bufferAtV) break;
                         }
+
+                        if constexpr (TARGET_PRUNING) {
+                            if (targetUpperBound != never) {
+                                if (minPossibleArrival >= targetUpperBound) break;
+                            }
+                        }
+
+                        if (it->arrivalTime < bestLocalArrival) {
+                            bestLocalArrival = it->arrivalTime;
+                        }
+
+                        // Pass 'u' as the board stop
+                        scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
                     }
                 }
 
-                walk_edge:
                 // Walk
                 const int walkArrival = graph.getWalkArrivalFrom(e, t);
                 if (walkArrival < never) {
@@ -300,9 +302,7 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
-    // Scan entire trip from boarding point, visiting ALL subsequent stops
-    inline void scanTrip(const int tripId, const uint16_t startStopIndex, const int arrivalAtStart,
-                         const Vertex boardStop, const int targetUpperBound) noexcept {
+    inline void scanTrip(const int tripId, const uint16_t startStopIndex, const int arrivalAtStart, const Vertex boardStop, const int targetUpperBound) noexcept {
         int currentArrivalTime = arrivalAtStart;
 
         uint32_t currentAbsIndex = graph.getTripOffset(tripId) + startStopIndex;
@@ -315,7 +315,6 @@ private:
 
             VehicleLabel& L = globalVehicleLabels[idx];
 
-            // Early termination: already visited this stop-event with better time
             if (L.timeStamp == timeStamp && L.arrivalTime <= currentArrivalTime) {
                 return;
             }
@@ -326,10 +325,9 @@ private:
             const auto& currentLeg = graph.getTripLeg(idx);
             Vertex currentStopVertex = currentLeg.stopId;
 
-            // Relax to this stop
+            // pass boardStop so we can reconstruct later
             relaxWalking(currentStopVertex, boardStop, State::OnVehicle, currentArrivalTime, false);
 
-            // Move to next stop on the trip
             if (idx + 1 < endAbsIndex) {
                 const auto& nextLeg = graph.getTripLeg(idx + 1);
                 currentArrivalTime = nextLeg.arrivalTime;
@@ -337,8 +335,7 @@ private:
         }
     }
 
-    inline void relaxWalking(const Vertex v, const Vertex parent, const State parentState,
-                             const int newTime, const bool reachedByWalking) noexcept {
+    inline void relaxWalking(const Vertex v, const Vertex parent, const State parentState, const int newTime, const bool reachedByWalking) noexcept {
         relaxCount++;
         profiler.countMetric(TDD::METRIC_RELAXES_WALKING);
 

@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
     new CompareTDGraphVariants(shell);
     new CompareCSTvsClassicVariants(shell);
     new CompareBSTvsClassicVariants(shell);
-    new CompareTJSvsTD(shell);
+    new CompareJTSvsTD(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
