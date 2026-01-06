@@ -293,7 +293,7 @@ class CompareJTSvsTD : public ParameterizedCommand {
 public:
     CompareJTSvsTD(BasicShell& shell) :
         ParameterizedCommand(shell, "compareJTSvsTD",
-            "Compares JumpTripSearch on JTSGraph vs TimeDependentDijkstraStateful on TimeDependentGraphClassic.") {
+            "Compares JumpTripSearch on JTSGraph vs TimeDependentDijkstraStateful on TimeDependentGraph.") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -316,16 +316,15 @@ public:
         std::cout << "Intermediate data loaded: " << intermediateData.numberOfStops() << " stops, "
                   << intermediateData.numberOfTrips() << " trips" << std::endl;
 
-        // --- Build TimeDependentGraphClassic ---
-        std::cout << "\n=== Building TimeDependentGraphClassic ===" << std::endl;
-        Timer buildTimerClassic;
-        TimeDependentGraphClassic graphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
-        double buildTimeClassic = buildTimerClassic.elapsedMilliseconds();
+        // --- Build TimeDependentGraph ---
+        std::cout << "\n=== Building TimeDependentGraph ===" << std::endl;
+        Timer buildTimerTD;
+        TimeDependentGraph graphTD = TimeDependentGraph::FromIntermediate(intermediateData);
+        double buildTimeTD = buildTimerTD.elapsedMilliseconds();
 
-        std::cout << "Classic graph created: " << graphClassic.numVertices() << " vertices, "
-                  << graphClassic.numEdges() << " edges" << std::endl;
-        std::cout << "Build time: " << String::msToString(buildTimeClassic) << std::endl;
-        graphClassic.printStatistics();
+        std::cout << "TD graph created: " << graphTD.numVertices() << " vertices, "
+                  << graphTD.numEdges() << " edges" << std::endl;
+        std::cout << "Build time: " << String::msToString(buildTimeTD) << std::endl;
 
         // --- Build JTSGraph ---
         std::cout << "\n=== Building JTSGraph ===" << std::endl;
@@ -353,11 +352,11 @@ public:
         resultsTD.reserve(n);
         resultsJTS.reserve(n);
 
-        // --- Run TimeDependentDijkstraStateful on TimeDependentGraphClassic ---
-        std::cout << "\n=== Running TimeDependentDijkstraStateful on TimeDependentGraphClassic ===" << std::endl;
+        // --- Run TimeDependentDijkstraStateful on TimeDependentGraph ---
+        std::cout << "\n=== Running TimeDependentDijkstraStateful on TimeDependentGraph ===" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
-        TDDijkstra algorithmTD(graphClassic, intermediateData.numberOfStops(), &ch);
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        TDDijkstra algorithmTD(graphTD, intermediateData.numberOfStops(), &ch);
 
         long long totalTDSettles = 0;
         long long totalTDRelaxes = 0;
@@ -480,11 +479,11 @@ public:
         std::cout << "\n=== Performance Summary ===" << std::endl;
         std::cout << std::fixed << std::setprecision(2);
 
-        std::cout << "\n[Graph Info - TimeDependentGraphClassic]" << std::endl;
-        std::cout << "  Build time: " << String::msToString(buildTimeClassic) << std::endl;
-        std::cout << "  Vertices: " << graphClassic.numVertices() << std::endl;
-        std::cout << "  Edges: " << graphClassic.numEdges() << std::endl;
-        std::cout << "  Connections: " << graphClassic.allDiscreteTrips.size() << std::endl;
+        std::cout << "\n[Graph Info - TimeDependentGraph]" << std::endl;
+        std::cout << "  Build time: " << String::msToString(buildTimeTD) << std::endl;
+        std::cout << "  Vertices: " << graphTD.numVertices() << std::endl;
+        std::cout << "  Edges: " << graphTD.numEdges() << std::endl;
+        std::cout << "  Connections: " << graphTD.allDiscreteTrips.size() << std::endl;
 
         std::cout << "\n[Graph Info - JTSGraph]" << std::endl;
         std::cout << "  Build time: " << String::msToString(buildTimeJTS) << std::endl;
@@ -493,9 +492,9 @@ public:
         std::cout << "  Connections: " << jtsGraph.allDiscreteTrips.size() << std::endl;
 
         std::cout << "\n[Query Time]" << std::endl;
-        std::cout << "  TD-Dijkstra (TimeDependentGraphClassic): " << String::msToString(tdQueryTime)
+        std::cout << "  TD-Dijkstra (TimeDependentGraph): " << String::msToString(tdQueryTime)
                   << " (" << (tdQueryTime / n) << " ms/query)" << std::endl;
-        std::cout << "  JumpTripSearch (JTSGraph):               " << String::msToString(jtsQueryTime)
+        std::cout << "  JumpTripSearch (JTSGraph):        " << String::msToString(jtsQueryTime)
                   << " (" << (jtsQueryTime / n) << " ms/query)" << std::endl;
         double querySpeedup = tdQueryTime / jtsQueryTime;
         if (querySpeedup > 1.0) {

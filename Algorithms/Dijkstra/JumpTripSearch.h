@@ -292,24 +292,6 @@ private:
         uint32_t currentAbsIndex = graph.getTripOffset(tripId) + startStopIndex;
         uint32_t endAbsIndex = graph.getTripOffset(tripId + 1);
 
-        // DEBUG: Check first stop
-        // In scanTrip, replace the existing debug with:
-        static int debugCount = 0;
-        if (debugCount < 5 && currentAbsIndex < endAbsIndex) {
-            const auto& firstLeg = graph.getTripLeg(currentAbsIndex);
-            if (firstLeg.arrivalTime != arrivalAtStart) {
-                std::cout << "DEBUG scanTrip MISMATCH:" << std::endl;
-                std::cout << "  tripId=" << tripId << std::endl;
-                std::cout << "  startStopIndex=" << startStopIndex << std::endl;
-                std::cout << "  arrivalAtStart (from route)=" << arrivalAtStart << std::endl;
-                std::cout << "  tripLeg.arrivalTime=" << firstLeg.arrivalTime << std::endl;
-                std::cout << "  tripLeg.stopId=" << firstLeg.stopId << std::endl;
-                std::cout << "  currentAbsIndex=" << currentAbsIndex << std::endl;
-                std::cout << "  tripOffset[tripId]=" << graph.getTripOffset(tripId) << std::endl;
-                debugCount++;
-            }
-        }
-
         for (uint32_t idx = currentAbsIndex; idx < endAbsIndex; ++idx) {
             if constexpr (TARGET_PRUNING) {
                 if (targetUpperBound != never && currentArrivalTime >= targetUpperBound) return;
