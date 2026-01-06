@@ -15,14 +15,15 @@
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-// A two-state time-dependent Dijkstra optimized for memory bandwidth.
+// JumpTripSearch: Route-based trip scanning with binary search
 //
-// OPTIMIZATIONS:
-// 1. Single-Stream Vehicle Updates (No TripID/Parent in VehicleLabel).
-// 2. Merged Node State (Hot/Cold unified).
-// 3. Inner-loop Pruning.
-// 4. Flattened Graph Data & Direct Pointers.
-// 5. Search-based Path Reconstruction (No metadata tracking in hot path).
+// Key algorithm:
+// 1. Use CoreCH for initial/final transfers
+// 2. At each stop, iterate through ROUTES (not edges)
+// 3. Binary search to find first catchable trip per route
+// 4. Scan trip to relax all subsequent stops
+//
+// This is the corrected version using route-based iteration.
 
 template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
 class JumpTripSearch {
@@ -34,9 +35,6 @@ public:
 
     enum class State : uint8_t { AtStop = 0, OnVehicle = 1 };
 
-    // --- MERGED NODE LABEL (24 bytes) ---
-    // Stores everything needed for the node state.
-    // Removes the need for separate Hot/Cold vectors.
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex), parentState(State::AtStop), reachedByWalking(false) {}
@@ -53,21 +51,16 @@ public:
             return arrivalTime < other->arrivalTime;
         }
 
-        int arrivalTime;            // 4
-        int timeStamp;              // 4
-        Vertex parent;              // 4
-        State parentState;          // 1
-        bool reachedByWalking;      // 1
-        // Padding automatically handled by compiler
+        int arrivalTime;
+        int timeStamp;
+        Vertex parent;
+        State parentState;
+        bool reachedByWalking;
     };
 
-    // --- LITE VEHICLE LABEL (8 bytes) ---
-    // Minimal footprint for maximum scan speed.
     struct VehicleLabel {
-        int arrivalTime = intMax; // 4
-        int timeStamp = -1;       // 4
-        // Removed: tripId, parent.
-        // We use search-based reconstruction to recover these.
+        int arrivalTime = intMax;
+        int timeStamp = -1;
     };
 
 public:
@@ -158,7 +151,7 @@ public:
         Vertex vertex;
         State state;
         int arrivalTime;
-        int tripId; // -1 if walking
+        int tripId;
     };
 
     inline std::vector<PathEntry> getPath(const Vertex target) const noexcept {
@@ -169,12 +162,11 @@ public:
         Vertex curVertex = target;
         int curTime = endNode.arrivalTime;
 
-        // Reconstruct path backwards
         while (true) {
             path.push_back({curVertex, State::AtStop, curTime, -1});
 
             const NodeLabel& L = nodeLabels[curVertex];
-            if (L.parent == noVertex) break; // Source reached
+            if (L.parent == noVertex) break;
 
             Vertex prevVertex = L.parent;
             State viaState = L.parentState;
@@ -218,7 +210,6 @@ private:
         while (!Q.empty()) {
             const NodeLabel* cur = Q.extractFront();
 
-            // FIX: Deduce vertex index from pointer math
             const Vertex u = Vertex(cur - nodeLabels.data());
             const int t = cur->arrivalTime;
 
@@ -252,47 +243,40 @@ private:
                 }
             }
 
-            // 2. Scan Edges
+            // 2. Process stop: iterate through ROUTES serving this stop
+            if (u < numberOfStops) {
+                const auto& routesFromStop = graph.getRoutesFromStop(u);
+
+                for (const auto& routeAtStop : routesFromStop) {
+                    // Binary search to find the first trip on this route that we can catch
+                    const auto* begin = graph.getRouteTripsBegin(routeAtStop);
+                    const auto* end = graph.getRouteTripsEnd(routeAtStop);
+
+                    auto it = std::lower_bound(begin, end, t,
+                        [](const typename Graph::RouteTripInfo& trip, int time) {
+                            return trip.departureTime < time;
+                        });
+
+                    if (it == end) {
+                        continue; // No catchable trip on this route
+                    }
+
+                    // Target pruning: check if this trip can improve
+                    if constexpr (TARGET_PRUNING) {
+                        if (targetUpperBound != never) {
+                            if (it->minArrivalTime >= targetUpperBound) continue;
+                        }
+                    }
+
+                    // Scan this trip starting from the next stop after boarding
+                    scanTrip(it->tripId, routeAtStop.stopIndexInRoute + 1,
+                             it->arrivalTimeAtNextStop, u, targetUpperBound);
+                }
+            }
+
+            // 3. Walk to neighbors
             for (const Edge e : graph.edgesFrom(u)) {
                 const Vertex v = graph.get(ToVertex, e);
-
-                if (u < numberOfStops) {
-                    const auto& atf = graph.get(Function, e);
-
-                    const DiscreteTrip* begin = graph.getTripsBegin(atf);
-                    const DiscreteTrip* end = graph.getTripsEnd(atf);
-                    const int* suffixBase = graph.getSuffixMinBegin(atf);
-
-                    int bestLocalArrival = never;
-                    const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
-
-                    for (auto it = begin; it != end; ++it) {
-                        // Skip trips that depart before we can catch them
-                        if (it->departureTime < t) continue;
-
-                        const size_t idx = std::distance(begin, it);
-                        const int minPossibleArrival = suffixBase[idx];
-
-                        if (bestLocalArrival != never) {
-                            if (minPossibleArrival > bestLocalArrival + bufferAtV) break;
-                        }
-
-                        if constexpr (TARGET_PRUNING) {
-                            if (targetUpperBound != never) {
-                                if (minPossibleArrival >= targetUpperBound) break;
-                            }
-                        }
-
-                        if (it->arrivalTime < bestLocalArrival) {
-                            bestLocalArrival = it->arrivalTime;
-                        }
-
-                        // Pass 'u' as the board stop
-                        scanTrip(it->tripId, it->departureStopIndex + 1, it->arrivalTime, u, targetUpperBound);
-                    }
-                }
-
-                // Walk
                 const int walkArrival = graph.getWalkArrivalFrom(e, t);
                 if (walkArrival < never) {
                     relaxWalking(v, u, State::AtStop, walkArrival, curReachedByWalking);
@@ -307,6 +291,24 @@ private:
 
         uint32_t currentAbsIndex = graph.getTripOffset(tripId) + startStopIndex;
         uint32_t endAbsIndex = graph.getTripOffset(tripId + 1);
+
+        // DEBUG: Check first stop
+        // In scanTrip, replace the existing debug with:
+        static int debugCount = 0;
+        if (debugCount < 5 && currentAbsIndex < endAbsIndex) {
+            const auto& firstLeg = graph.getTripLeg(currentAbsIndex);
+            if (firstLeg.arrivalTime != arrivalAtStart) {
+                std::cout << "DEBUG scanTrip MISMATCH:" << std::endl;
+                std::cout << "  tripId=" << tripId << std::endl;
+                std::cout << "  startStopIndex=" << startStopIndex << std::endl;
+                std::cout << "  arrivalAtStart (from route)=" << arrivalAtStart << std::endl;
+                std::cout << "  tripLeg.arrivalTime=" << firstLeg.arrivalTime << std::endl;
+                std::cout << "  tripLeg.stopId=" << firstLeg.stopId << std::endl;
+                std::cout << "  currentAbsIndex=" << currentAbsIndex << std::endl;
+                std::cout << "  tripOffset[tripId]=" << graph.getTripOffset(tripId) << std::endl;
+                debugCount++;
+            }
+        }
 
         for (uint32_t idx = currentAbsIndex; idx < endAbsIndex; ++idx) {
             if constexpr (TARGET_PRUNING) {
@@ -325,7 +327,6 @@ private:
             const auto& currentLeg = graph.getTripLeg(idx);
             Vertex currentStopVertex = currentLeg.stopId;
 
-            // pass boardStop so we can reconstruct later
             relaxWalking(currentStopVertex, boardStop, State::OnVehicle, currentArrivalTime, false);
 
             if (idx + 1 < endAbsIndex) {

@@ -570,4 +570,13 @@ public:
         tdGraph.deserialize(fileName);
         return tdGraph;
     }
+
+inline void printStatistics() const noexcept {
+        std::cout << "=== TimeDependentGraph Statistics ===" << std::endl;
+        std::cout << "Vertices: " << numVertices() << std::endl;
+        std::cout << "Edges: " << numEdges() << std::endl;
+        std::cout << "Total discrete trips: " << allDiscreteTrips.size() << std::endl;
+        std::cout << "Total trip legs: " << allTripLegs.size() << std::endl;
+        std::cout << "============================================" << std::endl;
+    }
 };
