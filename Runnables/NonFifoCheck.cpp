@@ -29,6 +29,14 @@ struct ViolationSample {
     int arr;
 };
 
+struct StopInconsistencySample {
+    size_t tripId;
+    size_t stopIndex;
+    Vertex stop;
+    int arr;
+    int dep;
+};
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "Usage: NonFifoCheck <intermediate.binary> [maxSamples]\n";
@@ -46,9 +54,28 @@ int main(int argc, char** argv) {
 
     size_t totalSegments = 0;
     size_t totalStopEvents = 0;
+    size_t inconsistentStopEvents = 0;
+    int maxInconsistency = 0;
+    StopInconsistencySample maxInconsistencySample{};
+    std::vector<StopInconsistencySample> inconsistencySamples;
+    inconsistencySamples.reserve(maxSamples);
     for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
         const Intermediate::Trip& trip = inter.trips[tripId];
         totalStopEvents += trip.stopEvents.size();
+        for (size_t i = 0; i < trip.stopEvents.size(); ++i) {
+            const Intermediate::StopEvent& stopEvent = trip.stopEvents[i];
+            if (stopEvent.arrivalTime > stopEvent.departureTime) {
+                inconsistentStopEvents++;
+                const int diff = stopEvent.arrivalTime - stopEvent.departureTime;
+                if (diff > maxInconsistency) {
+                    maxInconsistency = diff;
+                    maxInconsistencySample = {tripId, i, Vertex(stopEvent.stopId), stopEvent.arrivalTime, stopEvent.departureTime};
+                }
+                if (inconsistencySamples.size() < static_cast<size_t>(maxSamples)) {
+                    inconsistencySamples.push_back({tripId, i, Vertex(stopEvent.stopId), stopEvent.arrivalTime, stopEvent.departureTime});
+                }
+            }
+        }
         for (size_t i = 0; i + 1 < trip.stopEvents.size(); ++i) {
             const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
             const Intermediate::StopEvent& stopEventV = trip.stopEvents[i + 1];
@@ -125,6 +152,23 @@ int main(int argc, char** argv) {
             std::cout << "  Edge " << s.u << "->" << s.v
                       << " | prev dep/arr=" << s.prevDep << "/" << s.prevArr
                       << " | dep/arr=" << s.dep << "/" << s.arr << "\n";
+        }
+    }
+
+    std::cout << "\n=== Stop Event Inconsistency (arr > dep) ===\n";
+    std::cout << "Inconsistent stop events: " << inconsistentStopEvents << "\n";
+    if (inconsistentStopEvents > 0) {
+        std::cout << "Max arr-dep: " << maxInconsistency << " (trip " << maxInconsistencySample.tripId
+                  << ", stopIndex " << maxInconsistencySample.stopIndex
+                  << ", stop " << maxInconsistencySample.stop
+                  << ", arr/dep=" << maxInconsistencySample.arr << "/" << maxInconsistencySample.dep << ")\n";
+    }
+
+    if (!inconsistencySamples.empty()) {
+        std::cout << "\nSample inconsistent stop events (up to " << maxSamples << "):\n";
+        for (const auto& s : inconsistencySamples) {
+            std::cout << "  Trip " << s.tripId << ", stopIndex " << s.stopIndex
+                      << " (stop " << s.stop << ") arr/dep=" << s.arr << "/" << s.dep << "\n";
         }
     }
 
