@@ -37,17 +37,98 @@ struct StopInconsistencySample {
     int dep;
 };
 
+struct CaseSpec {
+    Vertex u1{noVertex};
+    Vertex v1{noVertex};
+    Vertex u2{noVertex};
+    Vertex v2{noVertex};
+    int dep1{0};
+    int arr1{0};
+    int dep2{0};
+    int arr2{0};
+    bool enabled{false};
+};
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: NonFifoCheck <intermediate.binary> [maxSamples]\n";
+        std::cerr << "Usage: NonFifoCheck <intermediate.binary> [maxSamples] [--trip <tripId>] [--check-seq u1 v1 dep1 arr1 u2 v2 dep2 arr2]\n";
         return 1;
     }
 
-    const std::string inputFile = argv[1];
-    const int maxSamples = (argc >= 3) ? std::stoi(argv[2]) : 10;
+    std::string inputFile;
+    int maxSamples = 10;
+    bool maxSamplesSet = false;
+    bool hasTripId = false;
+    size_t tripId = 0;
+    CaseSpec caseSpec;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--trip" && i + 1 < argc) {
+            tripId = static_cast<size_t>(std::stoull(argv[++i]));
+            hasTripId = true;
+        } else if (arg == "--check-seq" && i + 8 < argc) {
+            caseSpec.u1 = Vertex(std::stoul(argv[++i]));
+            caseSpec.v1 = Vertex(std::stoul(argv[++i]));
+            caseSpec.dep1 = std::stoi(argv[++i]);
+            caseSpec.arr1 = std::stoi(argv[++i]);
+            caseSpec.u2 = Vertex(std::stoul(argv[++i]));
+            caseSpec.v2 = Vertex(std::stoul(argv[++i]));
+            caseSpec.dep2 = std::stoi(argv[++i]);
+            caseSpec.arr2 = std::stoi(argv[++i]);
+            caseSpec.enabled = true;
+        } else if (inputFile.empty()) {
+            inputFile = arg;
+        } else if (!maxSamplesSet) {
+            maxSamples = std::stoi(arg);
+            maxSamplesSet = true;
+        }
+    }
+
+    if (inputFile.empty()) {
+        std::cerr << "Usage: NonFifoCheck <intermediate.binary> [maxSamples] [--trip <tripId>] [--check-seq u1 v1 dep1 arr1 u2 v2 dep2 arr2]\n";
+        return 1;
+    }
 
     std::cout << "Loading Intermediate data from: " << inputFile << std::endl;
     Intermediate::Data inter = Intermediate::Data::FromBinary(inputFile);
+
+    if (hasTripId) {
+        if (tripId >= inter.trips.size()) {
+            std::cerr << "Trip id " << tripId << " is out of bounds (0, " << inter.trips.size() << ")\n";
+            return 1;
+        }
+        const Intermediate::Trip& trip = inter.trips[tripId];
+        std::cout << "\n=== Trip " << tripId << " ===\n";
+        std::cout << trip << "\n";
+        for (size_t i = 0; i < trip.stopEvents.size(); ++i) {
+            const Intermediate::StopEvent& se = trip.stopEvents[i];
+            std::cout << "  [" << i << "] stop=" << se.stopId
+                      << " arr=" << se.arrivalTime
+                      << " dep=" << se.departureTime << "\n";
+        }
+
+        if (caseSpec.enabled) {
+            bool found = false;
+            for (size_t i = 0; i + 2 < trip.stopEvents.size(); ++i) {
+                const Intermediate::StopEvent& s0 = trip.stopEvents[i];
+                const Intermediate::StopEvent& s1 = trip.stopEvents[i + 1];
+                const Intermediate::StopEvent& s2 = trip.stopEvents[i + 2];
+
+                if (Vertex(s0.stopId) == caseSpec.u1 && Vertex(s1.stopId) == caseSpec.v1 &&
+                    s0.departureTime == caseSpec.dep1 && s1.arrivalTime == caseSpec.arr1 &&
+                    Vertex(s1.stopId) == caseSpec.u2 && Vertex(s2.stopId) == caseSpec.v2 &&
+                    s1.departureTime == caseSpec.dep2 && s2.arrivalTime == caseSpec.arr2) {
+                    found = true;
+                    std::cout << "\nCase match found at stop index " << i << "\n";
+                    break;
+                }
+            }
+            if (!found) {
+                std::cout << "\nCase match not found in trip " << tripId << "\n";
+            }
+        }
+    }
 
     std::unordered_map<std::pair<Vertex, Vertex>, std::vector<DepArr>, EdgeKeyHash> tripSegments;
     tripSegments.reserve(inter.trips.size() * 4);
