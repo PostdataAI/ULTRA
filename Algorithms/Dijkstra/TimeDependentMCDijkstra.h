@@ -214,9 +214,7 @@ public:
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
             }
-            // Pre-allocate heap labels
-            heapLabels.resize(g.numVertices() * 10); // Allow multiple labels per vertex
-            heapLabelCount = 0;
+            // Heap labels stored in deque for pointer stability
         }
 
     inline void clear() noexcept {
@@ -232,7 +230,7 @@ public:
         touchedVertices.clear();
 
         // Clear heap
-        heapLabelCount = 0;
+        heapLabels.clear();
         activeHeapLabels.clear();
 
         settleCount = 0;
@@ -343,11 +341,8 @@ private:
     }
 
     inline void enqueueLabel(const Vertex v, const MCLabel& label) noexcept {
-        if (heapLabelCount >= heapLabels.size()) {
-            heapLabels.resize(heapLabels.size() * 2);
-        }
-
-        HeapLabel& hl = heapLabels[heapLabelCount++];
+        heapLabels.emplace_back();
+        HeapLabel& hl = heapLabels.back();
         hl.vertex = v;
         hl.label = label;
         activeHeapLabels.push_back(&hl);
@@ -426,6 +421,9 @@ private:
                     // const int maxDeparture = t + TIME_WINDOW;
 
                     for (; it != end; ++it) {
+                        if (it->tripId < 0 || static_cast<size_t>(it->tripId) >= graph.getTripCount()) {
+                            continue;
+                        }
                         const size_t tripIncrement = (curLabel.tripId == it->tripId) ? 0 : 1;
                         const size_t newTrips = curLabel.numberOfTrips + tripIncrement;
                         
@@ -474,6 +472,9 @@ private:
 
     inline void scanTrip(const int tripId, const uint16_t startStopIndex, const int arrivalAtStart,
                          const Vertex boardStop, const MCLabel& boardLabel, const int departureTime) noexcept {
+        if (tripId < 0 || static_cast<size_t>(tripId) >= graph.getTripCount()) return;
+        if (static_cast<size_t>(tripId + 1) > graph.getTripCount()) return;
+
         int currentArrivalTime = arrivalAtStart;
 
         uint32_t currentAbsIndex = graph.getTripOffset(tripId) + startStopIndex;
@@ -483,7 +484,9 @@ private:
         const int walkDist = boardLabel.walkingDistance;
         const size_t newTrips = boardLabel.numberOfTrips + tripIncrement;
 
+        const size_t maxStopEvents = graph.getNumStopEvents();
         for (uint32_t idx = currentAbsIndex; idx < endAbsIndex; ++idx) {
+            if (idx >= maxStopEvents) break;
             profiler.countMetric(METRIC_RELAXES_TRANSIT);
 
             // Vehicle label pruning: if we've already scanned this stop event
@@ -545,8 +548,7 @@ private:
 
     std::vector<LabelBag> nodeBags;
 
-    std::vector<HeapLabel> heapLabels;
-    size_t heapLabelCount;
+    std::deque<HeapLabel> heapLabels;
     std::vector<HeapLabel*> activeHeapLabels;
 
     std::vector<Vertex> touchedVertices;

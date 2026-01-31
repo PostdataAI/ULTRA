@@ -199,6 +199,11 @@ public:
         return allTripLegs.size();
     }
 
+    // [USAGE] Returns the number of trips in the timetable.
+    inline size_t getTripCount() const noexcept {
+        return (tripOffsets.size() > 0) ? (tripOffsets.size() - 1) : 0;
+    }
+
     // [USAGE] Maps a logical Trip ID (from DiscreteTrip) to its start index in the flat 'allTripLegs' array.
     inline uint32_t getTripOffset(const int tripId) const noexcept {
         return tripOffsets[tripId];
