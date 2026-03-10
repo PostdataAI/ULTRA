@@ -1,24 +1,30 @@
+# IDE
 .cproject
 .idea/
 .project
 .settings/
 .vscode/
+
+# Claude Code
 .claude/
-cmake-build-debug/
-cmake-build-debug-wsl/
-cmake-build-release/
-cmake-build-release-wsl/
+CLAUDE.md
+
+# Build
+cmake-build-*/
+build/
+
+# Data
 Networks/
-Networks.zip
+
+# Gitignored project directories
+papers/
+experiments/
+docs/
+
+# Runtime artifacts
+readcache
+Runnables/readcache
 Runnables/DelayExperiments
 Runnables/Network
-Runnables/readcache
 Runnables/ULTRA
 Runnables/ULTRAPHAST
-build/
-logs/
-docs/
-readcache
-Results/
-tmp/
-CLAUDE.md
