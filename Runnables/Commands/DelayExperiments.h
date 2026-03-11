@@ -359,7 +359,8 @@ inline StopId stopOfEvent(const TripBased::Data& tbData,
 
 inline Intermediate::TransferGraph convertShortcutsToStopGraph(
         const RAPTOR::Data& raptorData,
-        const TripBased::Data& tbData) noexcept {
+        const TripBased::Data& tbData,
+        const TransferGraph& seg) noexcept {
     const size_t numStops = raptorData.numberOfStops();
 
     Intermediate::TransferGraph graph;
@@ -370,7 +371,6 @@ inline Intermediate::TransferGraph convertShortcutsToStopGraph(
             raptorData.transferGraph.get(Coordinates, Vertex(i)));
     }
 
-    const auto& seg = tbData.stopEventGraph;
     for (Vertex from(0); from < seg.numVertices(); from++) {
         if (static_cast<size_t>(from) >= tbData.numberOfStopEvents()) continue;
         const StopId fromStop = stopOfEvent(tbData, StopEventId(from));
@@ -399,6 +399,12 @@ inline Intermediate::TransferGraph convertShortcutsToStopGraph(
 
     graph.packEdges();
     return graph;
+}
+
+inline Intermediate::TransferGraph convertShortcutsToStopGraph(
+        const RAPTOR::Data& raptorData,
+        const TripBased::Data& tbData) noexcept {
+    return convertShortcutsToStopGraph(raptorData, tbData, tbData.stopEventGraph);
 }
 
 inline RAPTOR::Data buildShortcutRaptorData(
@@ -1242,9 +1248,14 @@ public:
             tbResults.emplace_back(tbAlgorithm.getArrivals());
 
             // --- Convert event shortcuts to stop-level graph ---
+            // Use physics-only filtering so that annotation-based filters
+            // cannot prevent a stop pair from appearing in the stop-level graph.
+            TransferGraph stopLevelSource = delayData.filterShortcutGraphForStopLevel();
+            const Permutation& origToInt = queryData.originalToInternal;
+            stopLevelSource.applyVertexPermutation(origToInt);
             Intermediate::TransferGraph shortcutGraph =
                 DelayHelpers::convertShortcutsToStopGraph(
-                    queryData.tripData.raptorData, queryData.tripData);
+                    queryData.tripData.raptorData, queryData.tripData, stopLevelSource);
 
             // --- ULTRA-RAPTOR ---
             RAPTOR::Data shortcutRaptorData =
@@ -1362,12 +1373,15 @@ public:
         //     ULTRA-RAPTOR, ULTRA-RAPTOR (EP))
         // =================================================================
         Timer conversionTimer;
+        TransferGraph stopLevelSource = delayUpdater.getDelayData().filterShortcutGraphForStopLevel();
+        const Permutation& origToInt = queryData.originalToInternal;
+        stopLevelSource.applyVertexPermutation(origToInt);
         Intermediate::TransferGraph shortcutGraph =
             DelayHelpers::convertShortcutsToStopGraph(
-                queryData.tripData.raptorData, queryData.tripData);
+                queryData.tripData.raptorData, queryData.tripData, stopLevelSource);
         const double conversionTimeMs = conversionTimer.elapsedMilliseconds();
-        std::cout << "  Shortcut conversion: "
-                  << queryData.tripData.stopEventGraph.numEdges()
+        std::cout << "  Shortcut conversion (physics-only): "
+                  << stopLevelSource.numEdges()
                   << " stop-event edges -> "
                   << shortcutGraph.numEdges()
                   << " stop edges ("

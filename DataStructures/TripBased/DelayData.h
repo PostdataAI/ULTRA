@@ -184,6 +184,25 @@ public:
         }
     }
 
+    // Like filterShortcutGraph but skips annotation-based filters (MinOriginDelay,
+    // MaxOriginDelay), keeping only the physics-based feasibility check. Used as
+    // the source for stop-level projection so that annotation filtering cannot
+    // prevent a stop pair from appearing in the stop-level graph.
+    inline TransferGraph filterShortcutGraphForStopLevel() const noexcept {
+        TransferGraph result;
+        result.reserve(stopEventGraph.numVertices(), stopEventGraph.numEdges());
+        for (const Vertex fromStopEvent : stopEventGraph.vertices()) {
+            result.addVertex();
+            for (const Edge shortcut : stopEventGraph.edgesFrom(fromStopEvent)) {
+                const Vertex toStopEvent = stopEventGraph.get(ToVertex, shortcut);
+                const int travelTime = stopEventGraph.get(TravelTime, shortcut);
+                if (!isTransferFeasible(StopEventId(fromStopEvent), StopEventId(toStopEvent), travelTime)) continue;
+                result.addEdge(fromStopEvent, toStopEvent, stopEventGraph.edgeRecord(shortcut));
+            }
+        }
+        return result;
+    }
+
 private:
     inline RAPTOR::Data getDelayedRaptorData() const noexcept {
         RAPTOR::Data delayedData = data.raptorData;
