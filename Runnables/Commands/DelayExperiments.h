@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -27,7 +28,9 @@
 #include "../../DataStructures/CSA/Data.h"
 
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
+#include "../../Algorithms/CSA/HLCSA.h"
 #include "../../Algorithms/TripBased/Preprocessing/DelayUpdater.h"
 #include "../../Algorithms/TripBased/Query/Query.h"
 
@@ -1332,7 +1335,7 @@ public:
     MeasureDelayULTRACSAQueryPerformance(BasicShell& shell) :
         ParameterizedCommand(shell, "measureDelayULTRACSAQueryPerformance",
             "Measures query performance of Delay-ULTRA-CSA, ULTRA-RAPTOR, "
-            "ULTRA-RAPTOR (EP), ULTRA-TB, MR, TD-Dijkstra, and TAD.") {
+            "ULTRA-RAPTOR (EP), ULTRA-TB, MR, TD-Dijkstra, TAD, HL-RAPTOR, and HL-CSA.") {
         addParameter("Dijkstra RAPTOR data");
         addParameter("Trip-Based data");
         addParameter("Core CH data");
@@ -1341,6 +1344,9 @@ public:
         addParameter("Number of queries");
         addParameter("Start time", "14:00:00");
         addParameter("End time", "15:00:00");
+        addParameter("Out-hub file", "");
+        addParameter("In-hub file", "");
+        addParameter("Without replacement", "false");
     }
 
     virtual void execute() noexcept {
@@ -1470,12 +1476,58 @@ public:
             tdGraphClassic, delayedRaptorData.numberOfStops(), &bucketCH);
 
         // =================================================================
+        //  8c. HL-RAPTOR and HL-CSA (optional, when hub files provided)
+        // =================================================================
+        const std::string outHubFile = getParameter("Out-hub file");
+        const std::string inHubFile = getParameter("In-hub file");
+        const bool runHL = !outHubFile.empty() && !inHubFile.empty();
+
+        // Declare pointers — constructed only when hub files are provided
+        std::unique_ptr<TransferGraph> outHubs, inHubs;
+        std::unique_ptr<RAPTOR::HLRAPTOR<RAPTOR::AggregateProfiler>> hlRaptor;
+        std::unique_ptr<CSA::HLCSA<CSA::AggregateProfiler>> hlCsa;
+        std::unique_ptr<CSA::Data> hlCsaData;
+        std::unique_ptr<RAPTOR::Data> hlRaptorData;
+
+        if (runHL) {
+            std::cout << "\nLoading hub labels..." << std::endl;
+            outHubs = std::make_unique<TransferGraph>(outHubFile);
+            inHubs = std::make_unique<TransferGraph>(inHubFile);
+            std::cout << "  Out-hubs: " << outHubs->numVertices() << " vertices, "
+                      << outHubs->numEdges() << " edges" << std::endl;
+            std::cout << "  In-hubs:  " << inHubs->numVertices() << " vertices, "
+                      << inHubs->numEdges() << " edges" << std::endl;
+
+            // HL-RAPTOR: same delayed timetable as MR, but transfers via hub labels
+            hlRaptorData = std::make_unique<RAPTOR::Data>(delayedRaptorData);
+            hlRaptorData->useImplicitDepartureBufferTimes();
+            hlRaptor = std::make_unique<RAPTOR::HLRAPTOR<RAPTOR::AggregateProfiler>>(
+                *hlRaptorData, *outHubs, *inHubs);
+
+            // HL-CSA: build CSA data with empty transfer graph (HL handles transfers)
+            Intermediate::TransferGraph emptyTransferGraph;
+            emptyTransferGraph.addVertices(
+                queryData.tripData.raptorData.transferGraph.numVertices());
+            hlCsaData = std::make_unique<CSA::Data>(
+                DelayHelpers::buildCSADataWithShortcuts(
+                    queryData.tripData.raptorData, std::move(emptyTransferGraph)));
+            hlCsaData->sortConnectionsAscending();
+            hlCsa = std::make_unique<CSA::HLCSA<CSA::AggregateProfiler>>(
+                *hlCsaData, *outHubs, *inHubs);
+        }
+
+        // =================================================================
         //  9. Generate random queries
         // =================================================================
         const size_t n = getParameter<size_t>("Number of queries");
-        const std::vector<VertexQuery> queries =
-            generateRandomVertexQueries(bucketCH.numVertices(), n,
-                                        startTime, endTime);
+        const bool withoutReplacement = getParameter<bool>("Without replacement");
+        const std::vector<VertexQuery> queries = withoutReplacement
+            ? generateRandomVertexQueriesWithoutReplacement(
+                  bucketCH.numVertices(), n, startTime, endTime)
+            : generateRandomVertexQueries(
+                  bucketCH.numVertices(), n, startTime, endTime);
+        std::cout << "  Query mode: " << (withoutReplacement ? "without" : "with")
+                  << " replacement" << std::endl;
 
         // =================================================================
         //  10. Run all algorithms
@@ -1535,6 +1587,21 @@ public:
         const auto csaResults = runCSAQueries(queries, delayCSA);
         const double csaTime = timer.elapsedMilliseconds();
 
+        // HL algorithms (only when hub files provided)
+        double hlrTime = 0, hlcTime = 0;
+        std::vector<std::vector<RAPTOR::ArrivalLabel>> hlrResults, hlcResults;
+        if (runHL) {
+            std::cout << "\n--- HL-RAPTOR ---" << std::endl;
+            timer.restart();
+            hlrResults = runQueries(queries, *hlRaptor);
+            hlrTime = timer.elapsedMilliseconds();
+
+            std::cout << "\n--- HL-CSA ---" << std::endl;
+            timer.restart();
+            hlcResults = runHLCSAQueries(queries, *hlCsa);
+            hlcTime = timer.elapsedMilliseconds();
+        }
+
         // =================================================================
         //  11. Timing summary
         // =================================================================
@@ -1554,6 +1621,10 @@ public:
         printTime("ULTRA-RAPTOR total:", urTime);
         printTime("ULTRA-RAPTOR (EP) total:", urpTime);
         printTime("Delay-ULTRA-CSA total:", csaTime);
+        if (runHL) {
+            printTime("HL-RAPTOR total:", hlrTime);
+            printTime("HL-CSA total:", hlcTime);
+        }
 
         std::cout << std::setprecision(2);
         auto printSpeedup = [&](const char* label, double num, double den) {
@@ -1570,6 +1641,10 @@ public:
         printSpeedup("Speedup CSA vs URP:", urpTime, csaTime);
         printSpeedup("Speedup TAD vs MR:", mrTime, tadTime);
         printSpeedup("Speedup TD-Dijkstra vs MR:", mrTime, tdTime);
+        if (runHL) {
+            printSpeedup("Speedup HL-RAPTOR vs MR:", mrTime, hlrTime);
+            printSpeedup("Speedup HL-CSA vs MR:", mrTime, hlcTime);
+        }
 
         // =================================================================
         //  12. Quality comparisons
@@ -1594,6 +1669,15 @@ public:
 
         std::cout << "\n=== Quality: MR vs TD-Dijkstra (Classic) ===" << std::endl;
         DelayHelpers::printTDQuality(queries, dijkstraResults, tdResults);
+
+        if (runHL) {
+            std::cout << "\n=== Quality: MR vs HL-RAPTOR ===" << std::endl;
+            const QueryStatistics hlrStats(queries, dijkstraResults, hlrResults);
+            std::cout << hlrStats << std::endl;
+
+            std::cout << "=== Quality: MR vs HL-CSA ===" << std::endl;
+            DelayHelpers::printCSAQuality(queries, dijkstraResults, hlcResults);
+        }
     }
 
 private:
@@ -1628,6 +1712,27 @@ private:
             results.emplace_back(algorithm.getArrivals());
             progress++;
         }
+        return results;
+    }
+
+    template<typename HLCSA_ALGO>
+    inline std::vector<std::vector<RAPTOR::ArrivalLabel>> runHLCSAQueries(
+            const std::vector<VertexQuery>& queries,
+            HLCSA_ALGO& algorithm) const noexcept {
+        Progress progress(queries.size());
+        std::vector<std::vector<RAPTOR::ArrivalLabel>> results;
+        results.reserve(queries.size());
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+            std::vector<RAPTOR::ArrivalLabel> arrivals;
+            const int arr = algorithm.getEarliestArrivalTime(query.target);
+            if (arr < never) {
+                arrivals.emplace_back(arr, 1);
+            }
+            results.emplace_back(std::move(arrivals));
+            progress++;
+        }
+        algorithm.getProfiler().printStatistics();
         return results;
     }
 };

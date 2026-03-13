@@ -19,6 +19,7 @@ int main(int argc, char** argv) {
     ::Shell::Shell shell;
     new BuildCH(shell);
     new BuildCoreCH(shell);
+    new ExtractHubLabels(shell);
 
     //Preprocessing
     new BuildTDGraph(shell);

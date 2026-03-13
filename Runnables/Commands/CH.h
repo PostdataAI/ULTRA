@@ -10,6 +10,7 @@
 #include "../../DataStructures/RAPTOR/Data.h"
 
 #include "../../Algorithms/CH/CH.h"
+#include "../../Algorithms/CH/HubLabelExtractor.h"
 #include "../../Algorithms/CH/Preprocessing/CHBuilder.h"
 #include "../../Algorithms/CH/Preprocessing/BidirectionalWitnessSearch.h"
 #include "../../Shell/Shell.h"
@@ -172,3 +173,33 @@ private:
         data.serialize(getParameter("Network output file"));
     }
 };
+
+class ExtractHubLabels : public ParameterizedCommand {
+
+public:
+    ExtractHubLabels(BasicShell& shell) :
+        ParameterizedCommand(shell, "extractHubLabels", "Extracts hub labels from a full CH for use with HLRAPTOR/HLCSA.") {
+        addParameter("CH input file");
+        addParameter("Out-hub output file");
+        addParameter("In-hub output file");
+    }
+
+    virtual void execute() noexcept {
+        Timer totalTimer;
+
+        std::cout << "Loading CH..." << std::endl;
+        CH::CH ch(getParameter("CH input file"));
+        std::cout << "CH: " << String::prettyInt(ch.numVertices()) << " vertices, "
+                  << String::prettyInt(ch.numEdges()) << " edges" << std::endl;
+
+        CH::HubLabelExtractor extractor(ch);
+        extractor.run();
+
+        std::cout << "\nWriting out-hub labels..." << std::endl;
+        extractor.getOutHubs().writeBinary(getParameter("Out-hub output file"));
+        std::cout << "Writing in-hub labels..." << std::endl;
+        extractor.getInHubs().writeBinary(getParameter("In-hub output file"));
+        std::cout << "\nTotal preprocessing time (including I/O): " << String::msToString(totalTimer.elapsedMilliseconds()) << std::endl;
+    }
+};
+
