@@ -1182,13 +1182,16 @@ class MeasureDelayQueryCoverage : public ParameterizedCommand {
 public:
     MeasureDelayQueryCoverage(BasicShell& shell) :
         ParameterizedCommand(shell, "measureDelayQueryCoverage",
-            "Evaluates per-query coverage of TB, RAPTOR, RAPTOR-EP, and CSA "
+            "Evaluates per-query coverage of TB, RAPTOR, RAPTOR-EP, CSA, "
+            "and optionally HL-RAPTOR/HL-CSA "
             "using hypothetical mode (all replacement shortcuts known in advance).") {
         addParameter("Trip-Based data");
         addParameter("Bucket CH data");
         addParameter("Query input data");
         addParameter("Update log file");
         addParameter("Number of queries", "0");
+        addParameter("Out-hub file", "");
+        addParameter("In-hub file", "");
     }
 
     virtual void execute() noexcept {
@@ -1225,16 +1228,48 @@ public:
                   << " affected queries." << std::endl;
 
         // =================================================================
+        //  3b. Load hub labels (optional)
+        // =================================================================
+        const std::string outHubFile = getParameter("Out-hub file");
+        const std::string inHubFile = getParameter("In-hub file");
+        const bool runHL = !outHubFile.empty() && !inHubFile.empty();
+
+        std::unique_ptr<TransferGraph> outHubs, inHubs;
+        TransferGraph prebuiltReverseInHubs;
+        if (runHL) {
+            std::cout << "Loading hub labels..." << std::endl;
+            outHubs = std::make_unique<TransferGraph>(outHubFile);
+            inHubs = std::make_unique<TransferGraph>(inHubFile);
+            std::cout << "  Out-hubs: " << outHubs->numVertices() << " vertices, "
+                      << outHubs->numEdges() << " edges" << std::endl;
+            std::cout << "  In-hubs:  " << inHubs->numVertices() << " vertices, "
+                      << inHubs->numEdges() << " edges" << std::endl;
+            std::cout << "Pre-sorting hub graphs and building reverseInHubs..." << std::endl;
+            outHubs->sortEdges(TravelTime);
+            inHubs->sortEdges(TravelTime);
+            RAPTOR::Data tempData = queryData.tripData.raptorData;
+            tempData.useImplicitDepartureBufferTimes();
+            prebuiltReverseInHubs = RAPTOR::HLRAPTOR<RAPTOR::NoProfiler>::buildReverseInHubs(tempData, *inHubs);
+            std::cout << "  reverseInHubs: " << prebuiltReverseInHubs.numEdges() << " edges" << std::endl;
+        }
+
+        // =================================================================
         //  4. Per-query coverage loop
         // =================================================================
         std::vector<std::vector<RAPTOR::ArrivalLabel>> tbResults;
         std::vector<std::vector<RAPTOR::ArrivalLabel>> raptorResults;
         std::vector<std::vector<RAPTOR::ArrivalLabel>> raptorEPResults;
         std::vector<std::vector<RAPTOR::ArrivalLabel>> csaResults;
+        std::vector<std::vector<RAPTOR::ArrivalLabel>> hlrResults;
+        std::vector<std::vector<RAPTOR::ArrivalLabel>> hlcResults;
         tbResults.reserve(queries.size());
         raptorResults.reserve(queries.size());
         raptorEPResults.reserve(queries.size());
         csaResults.reserve(queries.size());
+        if (runHL) {
+            hlrResults.reserve(queries.size());
+            hlcResults.reserve(queries.size());
+        }
 
         Progress progress(queries.size());
         for (size_t i = 0; i < queries.size(); i++) {
@@ -1287,6 +1322,35 @@ public:
                              queries[i].target);
             csaResults.emplace_back(csaAlgorithm.getArrivals());
 
+            // --- HL-RAPTOR and HL-CSA (optional) ---
+            if (runHL) {
+                RAPTOR::Data hlRaptorData = queryData.tripData.raptorData;
+                hlRaptorData.useImplicitDepartureBufferTimes();
+                // Zero-copy constructor: references pre-sorted hub graphs, no 26M edge copy
+                RAPTOR::HLRAPTOR<RAPTOR::NoProfiler> hlRaptorAlg(
+                    hlRaptorData, *outHubs, *inHubs, prebuiltReverseInHubs);
+                hlRaptorAlg.run(queries[i].source, queries[i].departureTime,
+                                queries[i].target);
+                hlrResults.emplace_back(hlRaptorAlg.getArrivals());
+
+                Intermediate::TransferGraph emptyTransferGraph;
+                emptyTransferGraph.addVertices(
+                    queryData.tripData.raptorData.transferGraph.numVertices());
+                CSA::Data hlCsaData = DelayHelpers::buildCSADataWithShortcuts(
+                    queryData.tripData.raptorData, std::move(emptyTransferGraph));
+                hlCsaData.sortConnectionsAscending();
+                CSA::HLCSA<CSA::NoProfiler> hlCsaAlg(
+                    hlCsaData, *outHubs, *inHubs);
+                hlCsaAlg.run(queries[i].source, queries[i].departureTime,
+                             queries[i].target);
+                std::vector<RAPTOR::ArrivalLabel> hlcArrivals;
+                const int hlcArr = hlCsaAlg.getEarliestArrivalTime(queries[i].target);
+                if (hlcArr < never) {
+                    hlcArrivals.emplace_back(hlcArr, 1);
+                }
+                hlcResults.emplace_back(std::move(hlcArrivals));
+            }
+
             progress++;
         }
 
@@ -1311,6 +1375,17 @@ public:
         std::cout << "=== Delay-ULTRA-CSA Coverage ===" << std::endl;
         DelayHelpers::printCSAQuality(queries,
             queryInputData.failedQueryResults, csaResults);
+
+        if (runHL) {
+            std::cout << "\n=== HL-RAPTOR Coverage ===" << std::endl;
+            const QueryStatistics hlrStats(queries,
+                queryInputData.failedQueryResults, hlrResults);
+            std::cout << hlrStats << std::endl;
+
+            std::cout << "=== HL-CSA Coverage ===" << std::endl;
+            DelayHelpers::printCSAQuality(queries,
+                queryInputData.failedQueryResults, hlcResults);
+        }
     }
 };
 
