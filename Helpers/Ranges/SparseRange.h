@@ -38,7 +38,6 @@ public:
         beginIndex(0),
         endIndex(flag.size()) {
         while (beginIndex < endIndex && !flag[beginIndex]) beginIndex++;
-        while (beginIndex < endIndex && !flag[endIndex - 1]) endIndex--;
     }
 
     SparseRange(const Element begin, const Element end, const std::vector<bool>& flag) :
@@ -46,7 +45,6 @@ public:
         beginIndex(begin),
         endIndex(end) {
         while (beginIndex < endIndex && !flag[beginIndex]) beginIndex++;
-        while (beginIndex < endIndex && !flag[endIndex - 1]) endIndex--;
     }
 
     SparseRange(const std::vector<bool>&&) = delete;
@@ -79,7 +77,9 @@ public:
 
     inline Element back() const noexcept {
         Assert(!empty(), "Range is empty!");
-        return endIndex - Element(1);
+        Element last = endIndex;
+        do { --last; } while (last > beginIndex && !(*flag)[last]);
+        return last;
     }
 
 private:
