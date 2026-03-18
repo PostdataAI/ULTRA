@@ -1,6 +1,8 @@
+#include <fstream>
 #include <iostream>
-#include <vector>
+#include <sstream>
 #include <string>
+#include <vector>
 #include <random>
 
 #include "../../Helpers/MultiThreading.h"
@@ -10,6 +12,7 @@
 #include "../../DataStructures/RAPTOR/Data.h"
 
 #include "../../Algorithms/CH/CH.h"
+#include "../../Algorithms/CH/HubLabelExtractor.h"
 #include "../../Algorithms/CH/Preprocessing/CHBuilder.h"
 #include "../../Algorithms/CH/Preprocessing/BidirectionalWitnessSearch.h"
 #include "../../Shell/Shell.h"
@@ -172,3 +175,100 @@ private:
         data.serialize(getParameter("Network output file"));
     }
 };
+
+class ExtractHubLabels : public ParameterizedCommand {
+
+public:
+    ExtractHubLabels(BasicShell& shell) :
+        ParameterizedCommand(shell, "extractHubLabels", "Extracts hub labels from a full CH for use with HLRAPTOR/HLCSA.") {
+        addParameter("CH input file");
+        addParameter("Out-hub output file");
+        addParameter("In-hub output file");
+    }
+
+    virtual void execute() noexcept {
+        Timer totalTimer;
+
+        std::cout << "Loading CH..." << std::endl;
+        CH::CH ch(getParameter("CH input file"));
+        std::cout << "CH: " << String::prettyInt(ch.numVertices()) << " vertices, "
+                  << String::prettyInt(ch.numEdges()) << " edges" << std::endl;
+
+        CH::HubLabelExtractor extractor(ch);
+        extractor.run();
+
+        std::cout << "\nWriting out-hub labels..." << std::endl;
+        extractor.getOutHubs().writeBinary(getParameter("Out-hub output file"));
+        std::cout << "Writing in-hub labels..." << std::endl;
+        extractor.getInHubs().writeBinary(getParameter("In-hub output file"));
+        std::cout << "\nTotal preprocessing time (including I/O): " << String::msToString(totalTimer.elapsedMilliseconds()) << std::endl;
+    }
+};
+
+class ImportHubLabels : public ParameterizedCommand {
+
+public:
+    ImportHubLabels(BasicShell& shell) :
+        ParameterizedCommand(shell, "importHubLabels",
+            "Imports hub labels from lviennot/hub-labeling text format into TransferGraph binary files.") {
+        addParameter("Hub label text file");
+        addParameter("Number of vertices");
+        addParameter("Out-hub output file");
+        addParameter("In-hub output file");
+    }
+
+    virtual void execute() noexcept {
+        const std::string inputFile = getParameter("Hub label text file");
+        const size_t numVertices = getParameter<size_t>("Number of vertices");
+
+        std::ifstream is(inputFile);
+        Assert(is.is_open(), "Cannot open hub label file: " << inputFile);
+
+        DynamicTransferGraph outGraph, inGraph;
+        outGraph.addVertices(numVertices);
+        inGraph.addVertices(numVertices);
+
+        size_t outCount = 0, inCount = 0;
+        std::string line;
+        while (std::getline(is, line)) {
+            if (line.empty()) continue;
+            char type = line[0];
+            if (type != 'o' && type != 'i') continue;
+
+            std::istringstream ss(line.substr(2));
+            size_t a, b;
+            int64_t dist;
+            if (!(ss >> a >> b >> dist)) continue;
+
+            if (type == 'o') {
+                // o vertex hub distance → outHubs: vertex → hub
+                outGraph.addEdge(Vertex(a), Vertex(b)).set(TravelTime, static_cast<int>(dist));
+                outCount++;
+            } else {
+                // i hub vertex distance → inHubs: vertex → hub
+                inGraph.addEdge(Vertex(b), Vertex(a)).set(TravelTime, static_cast<int>(dist));
+                inCount++;
+            }
+        }
+        is.close();
+
+        std::cout << "Parsed " << outCount << " out-hub edges, "
+                  << inCount << " in-hub edges" << std::endl;
+
+        TransferGraph outHubs, inHubs;
+        Graph::move(std::move(outGraph), outHubs);
+        Graph::move(std::move(inGraph), inHubs);
+
+        double avgOut = static_cast<double>(outCount) / numVertices;
+        double avgIn = static_cast<double>(inCount) / numVertices;
+        std::cout << "Out-hubs: " << outHubs.numVertices() << " vertices, "
+                  << outHubs.numEdges() << " edges (avg " << avgOut << ")" << std::endl;
+        std::cout << "In-hubs:  " << inHubs.numVertices() << " vertices, "
+                  << inHubs.numEdges() << " edges (avg " << avgIn << ")" << std::endl;
+
+        outHubs.writeBinary(getParameter("Out-hub output file"));
+        inHubs.writeBinary(getParameter("In-hub output file"));
+        std::cout << "Hub labels written." << std::endl;
+    }
+};
+

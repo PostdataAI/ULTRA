@@ -46,9 +46,12 @@ private:
 public:
     HLRAPTOR(const Data& data, const InitialTransferGraph& outHubGraph, const InitialTransferGraph& inHubGraph, const Profiler& profilerTemplate = Profiler()) :
         data(data),
-        outHubs(outHubGraph),
-        inHubs(inHubGraph),
-        reverseInHubs(inHubGraph),
+        ownedOutHubs(outHubGraph),
+        ownedInHubs(inHubGraph),
+        ownedReverseInHubs(inHubGraph),
+        outHubs(ownedOutHubs),
+        inHubs(ownedInHubs),
+        reverseInHubs(ownedReverseInHubs),
         transferDistanceToTarget(inHubs.numVertices(), INFTY),
         hubParentLabels(inHubs.numVertices()),
         earliestArrival(inHubs.numVertices()),
@@ -67,17 +70,52 @@ public:
         profiler.registerPhases({PHASE_INITIALIZATION, PHASE_COLLECT, PHASE_SCAN, PHASE_TRANSFERS});
         profiler.registerMetrics({METRIC_ROUTES, METRIC_ROUTE_SEGMENTS, METRIC_VERTICES, METRIC_EDGES, METRIC_STOPS_BY_TRIP, METRIC_STOPS_BY_TRANSFER});
         profiler.initialize();
-        outHubs.sortEdges(TravelTime);
-        inHubs.sortEdges(TravelTime);
+        ownedOutHubs.sortEdges(TravelTime);
+        ownedInHubs.sortEdges(TravelTime);
+        buildReverseInHubs();
+    }
+
+    // Constructor referencing pre-built, pre-sorted hub data (zero-copy).
+    // Caller must ensure outHubsSorted, inHubsSorted, and reverseInHubsSorted
+    // are already sorted by TravelTime and outlive this HLRAPTOR instance.
+    HLRAPTOR(const Data& data, const TransferGraph& outHubsSorted, const TransferGraph& inHubsSorted, const TransferGraph& reverseInHubsSorted, const Profiler& profilerTemplate = Profiler()) :
+        data(data),
+        outHubs(outHubsSorted),
+        inHubs(inHubsSorted),
+        reverseInHubs(reverseInHubsSorted),
+        transferDistanceToTarget(inHubs.numVertices(), INFTY),
+        hubParentLabels(inHubs.numVertices()),
+        earliestArrival(inHubs.numVertices()),
+        stopsUpdatedByRoute(data.numberOfStops() + 1),
+        stopsUpdatedByTransfer(data.numberOfStops() + 1),
+        updatedHubs(inHubs.numVertices()),
+        routesServingUpdatedStops(data.numberOfRoutes()),
+        sourceVertex(noVertex),
+        targetVertex(noVertex),
+        targetStop(noStop),
+        lastTarget(Vertex(0)),
+        sourceDepartureTime(never),
+        profiler(profilerTemplate) {
+        Assert(data.hasImplicitBufferTimes(), "Departure buffer times have to be implicit!");
+        profiler.registerExtraRounds({EXTRA_ROUND_CLEAR, EXTRA_ROUND_INITIALIZATION});
+        profiler.registerPhases({PHASE_INITIALIZATION, PHASE_COLLECT, PHASE_SCAN, PHASE_TRANSFERS});
+        profiler.registerMetrics({METRIC_ROUTES, METRIC_ROUTE_SEGMENTS, METRIC_VERTICES, METRIC_EDGES, METRIC_STOPS_BY_TRIP, METRIC_STOPS_BY_TRANSFER});
+        profiler.initialize();
+    }
+
+    // Build reverseInHubs from inHubs (static helper for pre-building)
+    static TransferGraph buildReverseInHubs(const Data& data, const InitialTransferGraph& inHubGraph) {
+        TransferGraph result(inHubGraph);
         DynamicTransferGraph tempGraph;
-        Graph::copy(reverseInHubs, tempGraph);
+        Graph::copy(result, tempGraph);
         for (const Vertex vertex : tempGraph.vertices()) {
             if (data.isStop(vertex)) continue;
             tempGraph.deleteAllOutgoingEdges(vertex);
         }
         tempGraph.revert();
-        Graph::move(std::move(tempGraph), reverseInHubs);
-        reverseInHubs.sortEdges(TravelTime);
+        Graph::move(std::move(tempGraph), result);
+        result.sortEdges(TravelTime);
+        return result;
     }
 
     inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY) noexcept {
@@ -436,11 +474,26 @@ private:
         labels.emplace_back(std::min(rounds[round][stop].arrivalTime, (labels.empty()) ? (never) : (labels.back())));
     }
 
+    void buildReverseInHubs() {
+        DynamicTransferGraph tempGraph;
+        Graph::copy(ownedReverseInHubs, tempGraph);
+        for (const Vertex vertex : tempGraph.vertices()) {
+            if (data.isStop(vertex)) continue;
+            tempGraph.deleteAllOutgoingEdges(vertex);
+        }
+        tempGraph.revert();
+        Graph::move(std::move(tempGraph), ownedReverseInHubs);
+        ownedReverseInHubs.sortEdges(TravelTime);
+    }
+
 private:
     const Data& data;
-    TransferGraph outHubs;
-    TransferGraph inHubs;
-    TransferGraph reverseInHubs;
+    TransferGraph ownedOutHubs;
+    TransferGraph ownedInHubs;
+    TransferGraph ownedReverseInHubs;
+    const TransferGraph& outHubs;
+    const TransferGraph& inHubs;
+    const TransferGraph& reverseInHubs;
 
     std::vector<int> transferDistanceToTarget;
 

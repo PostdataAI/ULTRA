@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -28,6 +30,20 @@ inline std::vector<VertexQuery> generateRandomVertexQueries(const size_t numVert
     std::vector<VertexQuery> queries;
     for (size_t i = 0; i < numQueries; i++) {
         queries.emplace_back(Vertex(vertexDistribution(randomGenerator)), Vertex(vertexDistribution(randomGenerator)), timeDistribution(randomGenerator));
+    }
+    return queries;
+}
+
+inline std::vector<VertexQuery> generateRandomVertexQueriesWithoutReplacement(const size_t numVertices, const size_t numQueries, const int startTime = 0, const int endTime = 24 * 60 * 60) noexcept {
+    Assert(2 * numQueries <= numVertices, "Need at least 2n vertices for n without-replacement queries!");
+    std::mt19937 randomGenerator(42);
+    std::uniform_int_distribution<> timeDistribution(startTime, endTime - 1);
+    std::vector<size_t> perm(numVertices);
+    std::iota(perm.begin(), perm.end(), 0);
+    std::shuffle(perm.begin(), perm.end(), randomGenerator);
+    std::vector<VertexQuery> queries;
+    for (size_t i = 0; i < numQueries; i++) {
+        queries.emplace_back(Vertex(perm[i]), Vertex(perm[numQueries + i]), timeDistribution(randomGenerator));
     }
     return queries;
 }

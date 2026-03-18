@@ -459,3 +459,33 @@ private:
         }
     };
 };
+
+class ExportGraphEdgeList : public ParameterizedCommand {
+
+public:
+    ExportGraphEdgeList(BasicShell& shell) :
+        ParameterizedCommand(shell, "exportGraphEdgeList",
+            "Exports a TransferGraph as a plain text edge list (0-indexed: src dst weight).") {
+        addParameter("Graph input file");
+        addParameter("Output text file");
+    }
+
+    virtual void execute() noexcept {
+        TransferGraph graph(getParameter("Graph input file"));
+        Graph::printInfo(graph);
+
+        const std::string outputFile = getParameter("Output text file");
+        std::ofstream os(outputFile);
+        Assert(os.is_open(), "Cannot open output file: " << outputFile);
+
+        for (const auto [edge, from] : graph.edgesWithFromVertex()) {
+            os << static_cast<size_t>(from) << " "
+               << static_cast<size_t>(graph.get(ToVertex, edge)) << " "
+               << graph.get(TravelTime, edge) << "\n";
+        }
+        os.close();
+
+        std::cout << "Exported " << graph.numVertices() << " vertices, "
+                  << graph.numEdges() << " edges to " << outputFile << std::endl;
+    }
+};

@@ -46,13 +46,15 @@ class CompareAllAlgorithms : public ParameterizedCommand {
 public:
     CompareAllAlgorithms(BasicShell& shell) :
         ParameterizedCommand(shell, "compareAllAlgorithms",
-            "Compares MR, TD-Dijkstra variants, JTS, TTN (FC/CST/BST), and ULTRA-CSA.") {
+            "Compares MR, TD-Dijkstra variants, JTS, TTN (FC/CST/BST), ULTRA-CSA, and optionally HL-RAPTOR/HL-CSA.") {
         addParameter("RAPTOR input file");
         addParameter("CSA input file");
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Full CH input file");
         addParameter("Number of queries");
+        addParameter("Out-hub file", "");
+        addParameter("In-hub file", "");
     }
 
     virtual void execute() noexcept {
@@ -458,6 +460,76 @@ public:
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(ultraCSATime) << " (" << (ultraCSATime / n) << " ms/query)" << std::endl;
 
+        // ==================== ALGORITHM 13-14: HL-RAPTOR and HL-CSA (optional) ====================
+        const std::string outHubFile = getParameter("Out-hub file");
+        const std::string inHubFile = getParameter("In-hub file");
+        const bool runHL = !outHubFile.empty() && !inHubFile.empty();
+
+        std::vector<int> results_hl_raptor;
+        std::vector<int> results_hl_csa;
+        double hlRaptorTime = 0, hlCsaTime = 0;
+        double hlLoadTime = 0;
+        bool hl_raptor_correct = false;
+        bool hl_csa_correct = false;
+
+        if (runHL) {
+            std::cout << "\n========================================" << std::endl;
+            std::cout << "  13. HL-RAPTOR" << std::endl;
+            std::cout << "========================================\n" << std::endl;
+
+            Timer hlLoadTimer;
+            TransferGraph outHubs(outHubFile);
+            TransferGraph inHubs(inHubFile);
+            hlLoadTime = hlLoadTimer.elapsedMilliseconds();
+            std::cout << "Hub labels loaded in " << String::msToString(hlLoadTime) << std::endl;
+            std::cout << "  Out-hubs: " << outHubs.numVertices() << " vertices, "
+                      << outHubs.numEdges() << " edges" << std::endl;
+            std::cout << "  In-hubs:  " << inHubs.numVertices() << " vertices, "
+                      << inHubs.numEdges() << " edges" << std::endl;
+
+            RAPTOR::HLRAPTOR<RAPTOR::AggregateProfiler> hlRaptor(raptorData, outHubs, inHubs);
+
+            results_hl_raptor.reserve(n);
+            Timer hlrTimer;
+            for (size_t i = 0; i < queries.size(); ++i) {
+                const VertexQuery& query = queries[i];
+                hlRaptor.run(query.source, query.departureTime, query.target);
+                results_hl_raptor.push_back(hlRaptor.getEarliestArrivalTime(query.target));
+                if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                    std::cout << "\r  HL-RAPTOR: " << (i + 1) << "/" << n << " queries" << std::flush;
+                }
+            }
+            hlRaptorTime = hlrTimer.elapsedMilliseconds();
+            std::cout << std::endl;
+            std::cout << "Total time: " << String::msToString(hlRaptorTime) << " (" << (hlRaptorTime / n) << " ms/query)" << std::endl;
+
+            std::cout << "\n========================================" << std::endl;
+            std::cout << "  14. HL-CSA" << std::endl;
+            std::cout << "========================================\n" << std::endl;
+
+            CSA::Data hlCsaData = csaData;
+            TransferGraph emptyTransferGraph;
+            emptyTransferGraph.addVertices(csaData.transferGraph.numVertices());
+            Graph::move(std::move(emptyTransferGraph), hlCsaData.transferGraph);
+            hlCsaData.sortConnectionsAscending();
+
+            CSA::HLCSA<CSA::AggregateProfiler> hlCsa(hlCsaData, outHubs, inHubs);
+
+            results_hl_csa.reserve(n);
+            Timer hlcTimer;
+            for (size_t i = 0; i < queries.size(); ++i) {
+                const VertexQuery& query = queries[i];
+                hlCsa.run(query.source, query.departureTime, query.target);
+                results_hl_csa.push_back(hlCsa.getEarliestArrivalTime(query.target));
+                if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                    std::cout << "\r  HL-CSA: " << (i + 1) << "/" << n << " queries" << std::flush;
+                }
+            }
+            hlCsaTime = hlcTimer.elapsedMilliseconds();
+            std::cout << std::endl;
+            std::cout << "Total time: " << String::msToString(hlCsaTime) << " (" << (hlCsaTime / n) << " ms/query)" << std::endl;
+        }
+
         // ==================== PREPROCESSING SUMMARY ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "       PREPROCESSING TIMES" << std::endl;
@@ -484,6 +556,9 @@ public:
         std::cout << "Bucket-CH (FC):              " << String::msToString(bucketFCBuildTime) << std::endl;
         std::cout << "Bucket-CH (CST):             " << String::msToString(bucketCSTBuildTime) << std::endl;
         std::cout << "Bucket-CH (BST):             " << String::msToString(bucketBSTBuildTime) << std::endl;
+        if (runHL) {
+            std::cout << "Hub label load:              " << String::msToString(hlLoadTime) << std::endl;
+        }
         std::cout << "Total preprocessing time:    " << String::msToString(totalPreprocessingTime) << std::endl;
 
         // ==================== CORRECTNESS COMPARISON ====================
@@ -563,6 +638,10 @@ public:
         bool bst_corech_correct = compareResults("TTN-BST (Core-CH)", results_bst_corech, true);
         bool bst_bucketch_correct = compareResults("TTN-BST (Bucket-CH)", results_bst_bucketch, true);
         bool ultra_csa_correct = compareResults("ULTRA-CSA (Bucket-CH)", results_ultra_csa, false);
+        if (runHL) {
+            hl_raptor_correct = compareResults("HL-RAPTOR", results_hl_raptor, false);
+            hl_csa_correct = compareResults("HL-CSA", results_hl_csa, false);
+        }
 
         // ==================== PERFORMANCE SUMMARY ====================
         std::cout << "\n========================================" << std::endl;
@@ -598,6 +677,10 @@ public:
         printRow("TTN-BST (Core-CH)", bstCoreCHTime, bst_corech_correct);
         printRow("TTN-BST (Bucket-CH)", bstBucketCHTime, bst_bucketch_correct);
         printRow("ULTRA-CSA (Bucket-CH)", ultraCSATime, ultra_csa_correct);
+        if (runHL) {
+            printRow("HL-RAPTOR", hlRaptorTime, hl_raptor_correct);
+            printRow("HL-CSA", hlCsaTime, hl_csa_correct);
+        }
 
         std::cout << "└─────────────────────────────────┴────────────┴───────────┴─────────┘" << std::endl;
 
@@ -656,6 +739,8 @@ public:
         if (bst_corech_correct) correctAlgos.push_back({"TTN-BST (Core-CH)", bstCoreCHTime});
         if (bst_bucketch_correct) correctAlgos.push_back({"TTN-BST (Bucket-CH)", bstBucketCHTime});
         if (ultra_csa_correct) correctAlgos.push_back({"ULTRA-CSA (Bucket-CH)", ultraCSATime});
+        if (runHL && hl_raptor_correct) correctAlgos.push_back({"HL-RAPTOR", hlRaptorTime});
+        if (runHL && hl_csa_correct) correctAlgos.push_back({"HL-CSA", hlCsaTime});
 
         auto fastest = std::min_element(correctAlgos.begin(), correctAlgos.end(),
             [](const auto& a, const auto& b) { return a.second < b.second; });

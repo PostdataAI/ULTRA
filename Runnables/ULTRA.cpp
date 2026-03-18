@@ -1,4 +1,5 @@
 #include "Commands/CH.h"
+#include "Commands/NetworkIO.h"
 #include "Commands/ULTRAPreprocessing.h"
 
 #include "Commands/BenchmarkULTRA.h"
@@ -19,6 +20,9 @@ int main(int argc, char** argv) {
     ::Shell::Shell shell;
     new BuildCH(shell);
     new BuildCoreCH(shell);
+    new ExtractHubLabels(shell);
+    new ImportHubLabels(shell);
+    new ExportGraphEdgeList(shell);
 
     //Preprocessing
     new BuildTDGraph(shell);
