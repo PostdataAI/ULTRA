@@ -97,7 +97,7 @@ struct DelayQueryData {
     inline void update(RAPTOR::Data&& newRaptorData, const std::pair<TransferGraph, TransferGraph>&& filteredShortcuts) noexcept {
         const Order stopEventOrder = newRaptorData.rebuildRoutes();
         internalToOriginal = Permutation(stopEventOrder);
-        const Permutation originalToInternal(Construct::Invert, stopEventOrder);
+        originalToInternal = Permutation(Construct::Invert, stopEventOrder);
         tripData = Data(newRaptorData);
         tripData.stopEventGraph = filteredShortcuts.first;
         tripData.stopEventGraph.applyVertexPermutation(originalToInternal);
@@ -105,6 +105,7 @@ struct DelayQueryData {
 
     Data tripData;
     Permutation internalToOriginal;
+    Permutation originalToInternal;
 };
 
 }
