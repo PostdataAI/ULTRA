@@ -146,12 +146,13 @@ protected:
     inline void readStops(const std::string& fileName, const bool verbose = true) {
         IO::readFile(fileName, "Stops", [&](){
             int count = 0;
-            IO::CSVReader<4, IO::TrimChars<>, IO::DoubleQuoteEscape<',','"'>> in(fileName);
-            in.readHeader(ReadMode, "stop_id", "stop_name", "stop_lat", "stop_lon");
+            IO::CSVReader<6, IO::TrimChars<>, IO::DoubleQuoteEscape<',','"'>> in(fileName);
+            in.readHeader(ReadMode, "stop_id", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station");
             Stop stop;
             double latitude = 0.0;
             double longitude = 0.0;
-            while (in.readRow(stop.stopId, stop.name, latitude, longitude)) {
+            std::string locationType;
+            while (in.readRow(stop.stopId, stop.name, latitude, longitude, locationType, stop.parentStation)) {
                 stop.coordinates = Geometry::Point(Construct::LatLong, latitude, longitude);
                 if (stop.validate()) stops.emplace_back(stop);
                 count++;

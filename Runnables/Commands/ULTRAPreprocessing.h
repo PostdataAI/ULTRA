@@ -104,6 +104,7 @@ public:
         addParameter("Witness limit");
         addParameter("Number of threads", "max");
         addParameter("Pin multiplier", "1");
+        addParameter("Max transfer walking time", "-1");
         addParameter("Count optimal candidates?", "false");
         addParameter("Ignore isolated candidates?", "false");
     }
@@ -141,6 +142,7 @@ private:
         const std::string outputFile = getParameter("Output file");
         const size_t numberOfThreads = getNumberOfThreads();
         const size_t pinMultiplier = getParameter<size_t>("Pin multiplier");
+        const int maxTransferWalkingTime = getParameter<int>("Max transfer walking time");
 
         RAPTOR::Data data(inputFile);
         data.useImplicitDepartureBufferTimes();
@@ -148,7 +150,10 @@ private:
 
         RAPTOR::ULTRA::Builder<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES> shortcutGraphBuilder(data);
         std::cout << "Computing stop-to-stop ULTRA shortcuts (parallel with " << numberOfThreads << " threads)." << std::endl;
-        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), witnessLimit);
+        if (maxTransferWalkingTime > 0) {
+            std::cout << "Max transfer walking time: " << maxTransferWalkingTime << "s (" << String::secToString(maxTransferWalkingTime) << ")" << std::endl;
+        }
+        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), witnessLimit, -never, never, true, maxTransferWalkingTime);
         Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), data.transferGraph);
 
         data.dontUseImplicitDepartureBufferTimes();
@@ -412,6 +417,7 @@ public:
         addParameter("Memory limit", "2048");
         addParameter("Number of threads", "max");
         addParameter("Pin multiplier", "1");
+        addParameter("Max transfer walking time", "-1");
     }
 
     virtual void execute() noexcept {
@@ -425,8 +431,12 @@ public:
         const int numberOfThreads = getNumberOfThreads();
         const int pinMultiplier = getParameter<int>("Pin multiplier");
         const size_t memoryLimit = getParameter<size_t>("Memory limit");
+        const int maxTransferWalkingTime = getParameter<int>("Max transfer walking time");
         std::cout << "Computing delay-tolerant event-to-event ULTRA shortcuts (parallel with " << numberOfThreads << " threads)." << std::endl;
-        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), arrivalDelayBuffer, departureDelayBuffer, memoryLimit);
+        if (maxTransferWalkingTime > 0) {
+            std::cout << "Max transfer walking time: " << maxTransferWalkingTime << "s (" << String::secToString(maxTransferWalkingTime) << ")" << std::endl;
+        }
+        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), arrivalDelayBuffer, departureDelayBuffer, memoryLimit, -never, never, true, maxTransferWalkingTime);
         Graph::move(std::move(shortcutGraphBuilder.getStopEventGraph()), data.stopEventGraph);
 
         data.printInfo();

@@ -27,7 +27,7 @@ public:
         shortcuts(data.numberOfStopEvents()) {
     }
 
-    void computeShortcuts(const ThreadPinning& threadPinning, const int arrivalDelayBuffer, const int departureDelayBuffer, const size_t memoryLimit = 2048, const int minDepartureTime = -never, const int maxDepartureTime = never, const bool verbose = true) noexcept {
+    void computeShortcuts(const ThreadPinning& threadPinning, const int arrivalDelayBuffer, const int departureDelayBuffer, const size_t memoryLimit = 2048, const int minDepartureTime = -never, const int maxDepartureTime = never, const bool verbose = true, const int maxTransferWalkingTime = -1) noexcept {
         if (verbose) std::cout << "Computing shortcuts with " << threadPinning.numberOfThreads << " threads." << std::endl;
 
         Progress progress(data.numberOfStops(), verbose);
@@ -38,7 +38,7 @@ public:
             threadPinning.pinThread();
             const size_t threadNum = omp_get_thread_num();
 
-            DelayShortcutSearch<Debug> shortcutSearch(data, arrivalDelayBuffer, departureDelayBuffer, threadShortcuts[threadNum]);
+            DelayShortcutSearch<Debug> shortcutSearch(data, arrivalDelayBuffer, departureDelayBuffer, threadShortcuts[threadNum], maxTransferWalkingTime);
 
             #pragma omp for schedule(dynamic)
             for (size_t i = 0; i < data.numberOfStops(); i++) {

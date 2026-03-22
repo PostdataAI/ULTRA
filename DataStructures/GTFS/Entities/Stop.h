@@ -12,10 +12,11 @@ namespace GTFS {
 class Stop {
 
 public:
-    Stop(const std::string& stopId = "", const std::string& name = "", const Geometry::Point& coordinates = Geometry::Point()) :
+    Stop(const std::string& stopId = "", const std::string& name = "", const Geometry::Point& coordinates = Geometry::Point(), const std::string& parentStation = "") :
         stopId(stopId),
         name(name),
-        coordinates(coordinates) {
+        coordinates(coordinates),
+        parentStation(parentStation) {
     }
     Stop(IO::Deserialization& deserialize) {
         this->deserialize(deserialize);
@@ -31,17 +32,18 @@ public:
     }
 
     inline void serialize(IO::Serialization& serialize) const noexcept {
-        serialize(stopId, name, coordinates);
+        serialize(stopId, name, coordinates, parentStation);
     }
 
     inline void deserialize(IO::Deserialization& deserialize) noexcept {
-        deserialize(stopId, name, coordinates);
+        deserialize(stopId, name, coordinates, parentStation);
     }
 
 public:
     std::string stopId{""};
     std::string name{""};
     Geometry::Point coordinates{};
+    std::string parentStation{""};
 
 };
 

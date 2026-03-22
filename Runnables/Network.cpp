@@ -1,5 +1,6 @@
 #include "rapidjson/document.h"
 #include "rapidjson/filereadstream.h"
+#include "Commands/NetworkAnalysis.h"
 #include "Commands/NetworkIO.h"
 #include "Commands/NetworkTools.h"
 
@@ -37,6 +38,9 @@ int main(int argc, char** argv) {
     new MakeOneHopTransfers(shell);
     new ApplyMaxTransferSpeed(shell);
     new ApplyConstantTransferSpeed(shell);
+    new AnalyzeShortcutDistances(shell);
+    new PrintRaptorStatistics(shell);
+    new DumpStopNames(shell);
     shell.run();
     return 0;
 }

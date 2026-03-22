@@ -68,7 +68,7 @@ public:
     };
 
 public:
-    ShortcutSearch(const Data& data, DynamicTransferGraph& shortcutGraph, const int witnessTransferLimit) :
+    ShortcutSearch(const Data& data, DynamicTransferGraph& shortcutGraph, const int witnessTransferLimit, const int maxTransferWalkingTime = -1) :
         data(data),
         shortcutGraph(shortcutGraph),
         stationOfStop(data.numberOfStops()),
@@ -81,6 +81,7 @@ public:
         stopsUpdatedByRoute(data.numberOfStops()),
         stopsUpdatedByTransfer(data.numberOfStops()),
         witnessTransferLimit(witnessTransferLimit),
+        maxTransferWalkingTime(maxTransferWalkingTime),
         earliestDepartureTime(data.getMinDepartureTime()),
         timestamp(0) {
         Assert(data.hasImplicitBufferTimes(), "Shortcut search requires implicit departure buffer times!");
@@ -437,13 +438,16 @@ private:
                 if (data.isStop(routeParent)) {
                     const StopId transferParent = oneTripTransferParent[routeParent];
                     const int walkingDistance = oneTripArrivalLabels[routeParent].arrivalTime - oneTripArrivalLabels[transferParent].arrivalTime;
-                    //No witness dominates this candidate journey => insert shortcut
-                    if constexpr (IgnoreIsolatedCandidates) {
-                        if (directTransferArrivalLabels[currentVertex].arrivalTime < never) {
+                    //Insert shortcut unless walking time exceeds the cap
+                    const bool withinWalkingCap = (maxTransferWalkingTime <= 0 || walkingDistance <= maxTransferWalkingTime);
+                    if (withinWalkingCap) {
+                        if constexpr (IgnoreIsolatedCandidates) {
+                            if (directTransferArrivalLabels[currentVertex].arrivalTime < never) {
+                                shortcuts.emplace_back(transferParent, routeParent, walkingDistance);
+                            }
+                        } else {
                             shortcuts.emplace_back(transferParent, routeParent, walkingDistance);
                         }
-                    } else {
-                        shortcuts.emplace_back(transferParent, routeParent, walkingDistance);
                     }
                     Assert(shortcutDestinationCandidates.contains(routeParent), "Vertex " << currentVertex << " has route parent " << routeParent << " but the route parent does not know about this!");
                     if constexpr (!CountOptimalCandidates) {
@@ -637,6 +641,7 @@ private:
     IndexedSet<false, StopId> stopsUpdatedByTransfer;
 
     int witnessTransferLimit;
+    int maxTransferWalkingTime;
 
     int earliestDepartureTime;
 

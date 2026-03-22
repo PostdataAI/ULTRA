@@ -151,7 +151,7 @@ public:
     };
 
 public:
-    DelayShortcutSearch(const Data& tripData, const int arrivalDelayBuffer, const int departureDelayBuffer, ShortcutCollection& shortcuts) :
+    DelayShortcutSearch(const Data& tripData, const int arrivalDelayBuffer, const int departureDelayBuffer, ShortcutCollection& shortcuts, const int maxTransferWalkingTime = -1) :
         tripData(tripData),
         data(tripData.raptorData),
         stationOfStop(data.numberOfStops()),
@@ -182,6 +182,7 @@ public:
         earliestDepartureTime(data.getMinDepartureTime()),
         arrivalDelayBuffer(arrivalDelayBuffer),
         departureDelayBuffer(departureDelayBuffer),
+        maxTransferWalkingTime(maxTransferWalkingTime),
         shortcuts(shortcuts) {
         Assert(data.hasImplicitBufferTimes(), "Shortcut search requires implicit departure buffer times!");
         Dijkstra<TransferGraph, false> dijkstra(data.transferGraph);
@@ -953,6 +954,7 @@ private:
                 const int bestMaxOriginDelay = std::min(l.maxOriginDelay, maxTargetArrivalTime - shortcutDestinationStopCandidates[destinationStop].arrivalTime);
                 if (minOriginDelay > bestMaxOriginDelay) continue;
                 const int travelTime = shortcutDestinationCandidates[destination].travelTime;
+                if (maxTransferWalkingTime > 0 && travelTime > maxTransferWalkingTime) continue;
                 shortcuts.add(originStopEvent, DelayShortcut(destination, travelTime, minOriginDelay, bestMaxOriginDelay));
             }
         }
@@ -1068,6 +1070,7 @@ private:
 
     const int arrivalDelayBuffer;
     const int departureDelayBuffer;
+    const int maxTransferWalkingTime;
 
     ShortcutCollection& shortcuts;
 };

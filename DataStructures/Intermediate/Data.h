@@ -55,6 +55,18 @@ public:
         Map<std::string, int> stopIds = gtfs.stopIds();
         Map<std::string, int> tripIds = gtfs.tripIds();
         Map<std::string, std::vector<int>> frequencyIds = gtfs.frequencyIds();
+        // Build platform → parent station redirect map
+        Map<std::string, std::string> parentRedirect;
+        for (const GTFS::Stop& stop : gtfs.stops) {
+            if (!stop.parentStation.empty() && stop.parentStation != stop.stopId) {
+                if (stopIds.contains(stop.parentStation)) {
+                    parentRedirect.insert(stop.stopId, stop.parentStation);
+                }
+            }
+        }
+        if (!parentRedirect.empty()) {
+            std::cout << "Collapsing " << String::prettyInt(parentRedirect.size()) << " platform stops into parent stations." << std::endl;
+        }
         Map<std::string, std::vector<GTFS::StopTime>> stopTimeTrips;
         for (const GTFS::Trip& trip : gtfs.trips) {
             if (stopTimeTrips.contains(trip.tripId)) continue;
@@ -63,7 +75,9 @@ public:
             stopTimeTrips.insert(trip.tripId, std::vector<GTFS::StopTime>());
         }
         for (const GTFS::StopTime& stopTime : gtfs.stopTimes) {
-            if (!stopIds.contains(stopTime.stopId)) continue;
+            auto pit = parentRedirect.find(stopTime.stopId);
+            const std::string& effectiveId = (pit != parentRedirect.end()) ? pit->second : stopTime.stopId;
+            if (!stopIds.contains(effectiveId)) continue;
             if (!stopTimeTrips.contains(stopTime.tripId)) continue;
             stopTimeTrips[stopTime.tripId].emplace_back(stopTime);
         }
@@ -96,11 +110,11 @@ public:
                     for (const int i : frequencyIds[tripId]) {
                         const GTFS::Frequency& frequency = gtfs.frequencies[i];
                         for (int time = frequency.startTime; time <= frequency.endTime; time += frequency.headwaySecs) {
-                            data.buildTrip(gtfs, stopIds, stopTimes, seconds - stopTimes[0].departureTime + time, trip.name, route.name, route.type);
+                            data.buildTrip(gtfs, stopIds, parentRedirect, stopTimes, seconds - stopTimes[0].departureTime + time, trip.name, route.name, route.type);
                         }
                     }
                 } else {
-                    data.buildTrip(gtfs, stopIds, stopTimes, seconds, trip.name, route.name, route.type);
+                    data.buildTrip(gtfs, stopIds, parentRedirect, stopTimes, seconds, trip.name, route.name, route.type);
                 }
             }
         }
@@ -112,10 +126,14 @@ public:
             data.transferGraph.set(Coordinates, stop, data.stops[stop].coordinates);
         }
         for (const GTFS::Transfer& transfer : gtfs.transfers) {
-            if (!stopIds.contains(transfer.fromStopId)) continue;
-            if (!stopIds.contains(transfer.toStopId)) continue;
-            const StopId fromStopId = StopId(-(stopIds[transfer.fromStopId] + 1));
-            const StopId toStopId = StopId(-(stopIds[transfer.toStopId] + 1));
+            auto fromIt = parentRedirect.find(transfer.fromStopId);
+            const std::string& fromId = (fromIt != parentRedirect.end()) ? fromIt->second : transfer.fromStopId;
+            auto toIt = parentRedirect.find(transfer.toStopId);
+            const std::string& toId = (toIt != parentRedirect.end()) ? toIt->second : transfer.toStopId;
+            if (!stopIds.contains(fromId)) continue;
+            if (!stopIds.contains(toId)) continue;
+            const StopId fromStopId = StopId(-(stopIds[fromId] + 1));
+            const StopId toStopId = StopId(-(stopIds[toId] + 1));
             if (!data.transferGraph.isVertex(fromStopId)) continue;
             if (!data.transferGraph.isVertex(toStopId)) continue;
             if (fromStopId == toStopId) {
@@ -194,11 +212,13 @@ public:
     }
 
 protected:
-    inline void buildTrip(const GTFS::Data& gtfs, Map<std::string, int>& stopIds, const std::vector<GTFS::StopTime>& stopTimes, const int offset, const std::string& tripName, const std::string& routeName, const int type) {
+    inline void buildTrip(const GTFS::Data& gtfs, Map<std::string, int>& stopIds, const Map<std::string, std::string>& parentRedirect, const std::vector<GTFS::StopTime>& stopTimes, const int offset, const std::string& tripName, const std::string& routeName, const int type) {
         trips.emplace_back(tripName, routeName, type);
         Trip& trip = trips.back();
         for (const GTFS::StopTime& stopTime : stopTimes) {
-            int& stopId = stopIds[stopTime.stopId];
+            auto it = parentRedirect.find(stopTime.stopId);
+            const std::string& effectiveId = (it != parentRedirect.end()) ? it->second : stopTime.stopId;
+            int& stopId = stopIds[effectiveId];
             if (stopId >= 0) {
                 stops.emplace_back(gtfs.stops[stopId]);
                 stopId = -stops.size();

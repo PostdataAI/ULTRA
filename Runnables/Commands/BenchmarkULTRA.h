@@ -189,11 +189,19 @@ public:
         results_bst_bucketch.reserve(n);
         results_ultra_csa.reserve(n);
 
+        double mrTime = 0, tdClassicCoreCHTime = 0, tdClassicBucketCHTime = 0;
+        double jtsCoreCHTime = 0, jtsBucketCHTime = 0;
+        double fcCoreCHTime = 0, fcBucketCHTime = 0;
+        double cstCoreCHTime = 0, cstBucketCHTime = 0;
+        double bstCoreCHTime = 0, bstBucketCHTime = 0;
+        double ultraCSATime = 0;
+
         // ==================== ALGORITHM 1: MR with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  1. MR (DijkstraRAPTOR) with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using MRCoreCH = RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>;
         MRCoreCH algorithm_mr(raptorData, coreCH);
 
@@ -206,15 +214,17 @@ public:
                 std::cout << "\r  MR (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double mrTime = mrTimer.elapsedMilliseconds();
+        mrTime = mrTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(mrTime) << " (" << (mrTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 2: TD-Dijkstra Classic with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  2. TD-Dijkstra Classic with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using TDClassicCoreCH = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDClassicCoreCH algorithm_td_classic_corech(tdGraphClassic, raptorData.numberOfStops(), &coreCH);
 
@@ -227,15 +237,17 @@ public:
                 std::cout << "\r  TD Classic (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double tdClassicCoreCHTime = tdClassicCoreCHTimer.elapsedMilliseconds();
+        tdClassicCoreCHTime = tdClassicCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(tdClassicCoreCHTime) << " (" << (tdClassicCoreCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 3: TD-Dijkstra Classic with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  3. TD-Dijkstra Classic with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         std::cout << "Building Bucket-CH for TD Classic..." << std::endl;
         Timer bucketClassicBuildTimer;
         using TDClassicBucketCH = TimeDependentDijkstraBucketCH<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
@@ -252,15 +264,17 @@ public:
                 std::cout << "\r  TD Classic (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double tdClassicBucketCHTime = tdClassicBucketCHTimer.elapsedMilliseconds();
+        tdClassicBucketCHTime = tdClassicBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(tdClassicBucketCHTime) << " (" << (tdClassicBucketCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 4: JTS with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  4. JTS with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using JTSCoreCH = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         JTSCoreCH algorithm_jts_corech(tdGraph, raptorData.numberOfStops(), &coreCH);
 
@@ -273,15 +287,17 @@ public:
                 std::cout << "\r  JTS (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double jtsCoreCHTime = jtsCoreCHTimer.elapsedMilliseconds();
+        jtsCoreCHTime = jtsCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(jtsCoreCHTime) << " (" << (jtsCoreCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 5: JTS with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  5. JTS with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         std::cout << "Building Bucket-CH for JTS..." << std::endl;
         Timer bucketJTSBuildTimer;
         using JTSBucketCH = TransferAwareDijkstraBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
@@ -298,15 +314,17 @@ public:
                 std::cout << "\r  JTS (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double jtsBucketCHTime = jtsBucketCHTimer.elapsedMilliseconds();
+        jtsBucketCHTime = jtsBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(jtsBucketCHTime) << " (" << (jtsBucketCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 6: TTN-FC with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  6. TTN-FC with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using FCCoreCH = TransferAwareDijkstraFC<TDD::AggregateProfiler, false, true>;
         FCCoreCH algorithm_fc_corech(tdGraphFC, raptorData.numberOfStops(), &coreCH);
 
@@ -319,15 +337,17 @@ public:
                 std::cout << "\r  TTN-FC (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double fcCoreCHTime = fcCoreCHTimer.elapsedMilliseconds();
+        fcCoreCHTime = fcCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(fcCoreCHTime) << " (" << (fcCoreCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 7: TTN-FC with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  7. TTN-FC with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         std::cout << "Building Bucket-CH for TTN-FC..." << std::endl;
         Timer bucketFCBuildTimer;
         using FCBucketCH = TransferAwareDijkstraFCBucketCH<TimeDependentGraphFC, TDD::AggregateProfiler, false, true>;
@@ -344,15 +364,17 @@ public:
                 std::cout << "\r  TTN-FC (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double fcBucketCHTime = fcBucketCHTimer.elapsedMilliseconds();
+        fcBucketCHTime = fcBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(fcBucketCHTime) << " (" << (fcBucketCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 8: TTN-CST with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  8. TTN-CST with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using CSTCoreCH = TransferAwareDijkstraCST<TDD::AggregateProfiler, false, true>;
         CSTCoreCH algorithm_cst_corech(tdGraphCST, raptorData.numberOfStops(), &coreCH);
 
@@ -365,15 +387,17 @@ public:
                 std::cout << "\r  TTN-CST (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double cstCoreCHTime = cstCoreCHTimer.elapsedMilliseconds();
+        cstCoreCHTime = cstCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(cstCoreCHTime) << " (" << (cstCoreCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 9: TTN-CST with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  9. TTN-CST with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         std::cout << "Building Bucket-CH for TTN-CST..." << std::endl;
         Timer bucketCSTBuildTimer;
         using CSTBucketCH = TransferAwareDijkstraCSTBucketCH<TimeDependentGraphCST, TDD::AggregateProfiler, false, true>;
@@ -390,15 +414,17 @@ public:
                 std::cout << "\r  TTN-CST (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double cstBucketCHTime = cstBucketCHTimer.elapsedMilliseconds();
+        cstBucketCHTime = cstBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(cstBucketCHTime) << " (" << (cstBucketCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 10: TTN-BST with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  10. TTN-BST with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         using BSTCoreCH = TransferAwareDijkstraBST<TDD::AggregateProfiler, false, true>;
         BSTCoreCH algorithm_bst_corech(tdGraphBST, raptorData.numberOfStops(), &coreCH);
 
@@ -411,15 +437,17 @@ public:
                 std::cout << "\r  TTN-BST (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double bstCoreCHTime = bstCoreCHTimer.elapsedMilliseconds();
+        bstCoreCHTime = bstCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(bstCoreCHTime) << " (" << (bstCoreCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 11: TTN-BST with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  11. TTN-BST with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         std::cout << "Building Bucket-CH for TTN-BST..." << std::endl;
         Timer bucketBSTBuildTimer;
         using BSTBucketCH = TransferAwareDijkstraBSTBucketCH<TimeDependentGraphBST, TDD::AggregateProfiler, false, true>;
@@ -436,15 +464,17 @@ public:
                 std::cout << "\r  TTN-BST (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double bstBucketCHTime = bstBucketCHTimer.elapsedMilliseconds();
+        bstBucketCHTime = bstBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(bstBucketCHTime) << " (" << (bstBucketCHTime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 12: ULTRA-CSA with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
         std::cout << "  12. ULTRA-CSA with Bucket-CH (Full CH)" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        {
         CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algorithm_ultra_csa(csaData, fullCH);
 
         Timer ultraCSATimer;
@@ -456,9 +486,10 @@ public:
                 std::cout << "\r  ULTRA-CSA: " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
-        double ultraCSATime = ultraCSATimer.elapsedMilliseconds();
+        ultraCSATime = ultraCSATimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(ultraCSATime) << " (" << (ultraCSATime / n) << " ms/query)" << std::endl;
+        }
 
         // ==================== ALGORITHM 13-14: HL-RAPTOR and HL-CSA (optional) ====================
         const std::string outHubFile = getParameter("Out-hub file");
